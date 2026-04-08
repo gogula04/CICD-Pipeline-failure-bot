@@ -11,6 +11,16 @@ ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 SIGNATURE_CATALOG_PATH = Path(__file__).with_name("signatures.json")
 REQUIREMENT_ID_PATTERN = re.compile(r"\b[A-Z]{2,10}-[A-Z]{2,10}-\d+\b")
 DD_TOKEN_PATTERN = re.compile(r"\bdd_[A-Za-z0-9_]+\b")
+SQL_ERROR_CODE_PATTERN = re.compile(r"\b(?:sql\s*error|error)\s*[:#]?\s*(\d{3,5})\b", re.IGNORECASE)
+SQL_STATE_PATTERN = re.compile(r"\bsqlstate\s*[:=]?\s*([0-9A-Z]{5})\b", re.IGNORECASE)
+DUPLICATE_ENTRY_PATTERN = re.compile(
+    r"duplicate entry\s+['\"]?([^'\"]+)['\"]?\s+for key\s+['\"]?([^'\"]+)['\"]?",
+    re.IGNORECASE,
+)
+UNIQUE_CONSTRAINT_PATTERN = re.compile(
+    r"violates unique constraint\s+['\"]?([^'\"]+)['\"]?",
+    re.IGNORECASE,
+)
 
 HIGHLIGHT_PATTERNS = [
     re.compile(r"\berror\b", re.IGNORECASE),
@@ -250,6 +260,8 @@ def detect_tool(text: str, matched_signature: dict | None) -> str:
     if matched_signature and matched_signature.get("tool"):
         return matched_signature["tool"]
 
+    if any(token in text for token in ["sqlstate", "duplicate entry", "unique constraint", "integrity constraint", "jdbc", "sql error"]):
+        return "Database"
     if "maven" in text or "pom.xml" in text or "mvn " in text:
         return "Maven"
     if "gradle" in text or "build.gradle" in text:
@@ -300,6 +312,7 @@ def extract_missing_symbol_details(text: str):
     patterns = [
         re.compile(r"cannot find symbol\s*:?\s*(class|method|variable)\s+([A-Za-z0-9_$.<>]+)", re.IGNORECASE),
         re.compile(r"symbol:\s+(class|method|variable)\s+([A-Za-z0-9_$.<>]+)", re.IGNORECASE),
+        re.compile(r"location:\s+package\s+([A-Za-z0-9_.]+)", re.IGNORECASE),
         re.compile(r"package\s+([A-Za-z0-9_.]+)\s+does not exist", re.IGNORECASE),
         re.compile(r"undefined reference to [`']?([A-Za-z0-9_$.<>:]+)", re.IGNORECASE),
         re.compile(r"No module named ['\"]?([A-Za-z0-9_$.]+)", re.IGNORECASE),
@@ -315,6 +328,8 @@ def extract_missing_symbol_details(text: str):
 
             if len(groups) == 2:
                 kind, name = groups
+            elif "location:\s+package" in pattern.pattern:
+                kind, name = "package", groups[0]
             elif "package" in pattern.pattern:
                 kind, name = "package", groups[0]
             elif "undefined reference" in pattern.pattern:
@@ -340,6 +355,50 @@ def extract_missing_symbols(text: str):
     return [detail["name"] for detail in extract_missing_symbol_details(text)]
 
 
+def extract_database_integrity_details(text: str):
+    details = {}
+    source = text or ""
+
+    sql_error = SQL_ERROR_CODE_PATTERN.search(source)
+    if sql_error:
+        details["sqlError"] = sql_error.group(1)
+
+    sql_state = SQL_STATE_PATTERN.search(source)
+    if sql_state:
+        details["sqlState"] = sql_state.group(1)
+
+    duplicate_entry = DUPLICATE_ENTRY_PATTERN.search(source)
+    if duplicate_entry:
+        details["duplicateValue"] = duplicate_entry.group(1)
+        details["constraintName"] = duplicate_entry.group(2)
+
+    unique_constraint = UNIQUE_CONSTRAINT_PATTERN.search(source)
+    if unique_constraint:
+        details["constraintName"] = unique_constraint.group(1)
+
+    if "duplicate entry" in source.lower() or "unique constraint" in source.lower() or "sqlstate" in source.lower() or "integrity constraint" in source.lower():
+        details["databaseIntegrity"] = True
+
+    return details
+
+
+def is_database_integrity_issue(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(
+        token in lower
+        for token in [
+            "duplicate entry",
+            "sqlstate",
+            "sql error: 1062",
+            "error 1062",
+            "unique constraint",
+            "integrity constraint",
+            "duplicate key value violates unique constraint",
+            "duplicate key violates unique constraint",
+        ]
+    )
+
+
 def infer_error_type(root_line: str, context_text: str, matched_signature: dict | None):
     lower = (context_text or root_line or "").lower()
 
@@ -358,6 +417,8 @@ def infer_error_type(root_line: str, context_text: str, matched_signature: dict 
     if any(token in lower for token in ["cannot find symbol", "undefined reference", "package ", "compilation failure", " error:"]):
         return "COMPILATION_ERROR"
     if any(token in lower for token in ["assertionerror", "assertion failed", "there are test failures", "test failed", "tests run:"]):
+        return "TEST_FAILURE"
+    if is_database_integrity_issue(lower):
         return "TEST_FAILURE"
     if any(token in lower for token in ["nullpointerexception", "segmentation fault", "exception"]):
         return "RUNTIME_ERROR"
@@ -391,6 +452,8 @@ def describe_error_type(error_type: str, context_text: str, missing_symbol_detai
         return "Compilation Failure"
 
     if error_type == "TEST_FAILURE":
+        if is_database_integrity_issue(lower):
+            return "Test Failure - Database Integrity Error"
         return "Test Failure - Assertion Failure" if "assert" in lower else "Test Failure"
 
     if error_type == "RUNTIME_ERROR":
@@ -409,6 +472,7 @@ def infer_what_is_wrong(error_type: str, root_line: str, context_text: str, matc
     lower = (context_text or root_line or "").lower()
     symbol = extract_symbol_details(context_text)
     details = missing_symbol_details or extract_missing_symbol_details(context_text)
+    db_details = extract_database_integrity_details(context_text or root_line or "")
 
     if error_type == "COMPILATION_ERROR":
         if "cannot find symbol" in lower and details:
@@ -435,6 +499,23 @@ def infer_what_is_wrong(error_type: str, root_line: str, context_text: str, matc
         return "Source code or generated code contains a compile-time error that stopped the build."
 
     if error_type == "TEST_FAILURE":
+        if is_database_integrity_issue(lower):
+            sql_bits = []
+            if db_details.get("sqlError"):
+                sql_bits.append(f"SQL Error {db_details['sqlError']}")
+            if db_details.get("sqlState"):
+                sql_bits.append(f"SQLState {db_details['sqlState']}")
+
+            suffix = f" ({', '.join(sql_bits)})" if sql_bits else ""
+            duplicate_value = db_details.get("duplicateValue")
+            if duplicate_value:
+                return (
+                    f"Database constraint violation{suffix}: duplicate value '{duplicate_value}'"
+                    " was inserted into a unique column or index."
+                )
+            return (
+                f"Database constraint violation{suffix}: a duplicate value was inserted into a unique column or index."
+            )
         if "assertion" in lower:
             return "A test assertion failed because actual behavior does not match the expected result."
         return "A test case failed and caused the build to stop."
@@ -470,6 +551,7 @@ def infer_exact_fix(error_type: str, what_is_wrong: str, file_name: str | None, 
     location = f"{file_name}:{line}" if file_name and line else file_name
     symbol = extract_symbol_details(context_text)
     details = missing_symbol_details or extract_missing_symbol_details(context_text)
+    db_details = extract_database_integrity_details(context_text)
 
     if error_type == "COMPILATION_ERROR":
         class_names = [detail["name"] for detail in details if detail["kind"].lower() == "class"]
@@ -490,6 +572,17 @@ def infer_exact_fix(error_type: str, what_is_wrong: str, file_name: str | None, 
                 return f"Fix the import for package '{package_names[0]}' or add the missing dependency that provides it."
             return f"Fix the imports for packages {', '.join(package_names)} or add the dependencies that provide them."
         return f"Open {location or 'the first compiler error location'}, fix the missing symbol/import/syntax issue, and rerun the build."
+
+    if error_type == "TEST_FAILURE" and is_database_integrity_issue(context_text):
+        sql_bits = []
+        if db_details.get("sqlError"):
+            sql_bits.append(f"SQL Error {db_details['sqlError']}")
+        if db_details.get("sqlState"):
+            sql_bits.append(f"SQLState {db_details['sqlState']}")
+        details_text = f" ({', '.join(sql_bits)})" if sql_bits else ""
+        return (
+            f"Use unique test data, reset the database state between tests, and verify the unique constraint that triggered the duplicate insert{details_text}."
+        )
 
     if matched_signature and matched_signature.get("fixRecommendation"):
         fix = matched_signature["fixRecommendation"]
@@ -549,7 +642,136 @@ def extract_secondary_issues(log: str, root_line: str, max_items: int = 5):
     return issues
 
 
-def format_analysis_output(root_failure_statement, error_type, file_name, line, class_or_function, missing_symbols, what_is_wrong, exact_fix, secondary_issues):
+def build_human_root_cause(error_type: str, root_cause: str, what_is_wrong: str, context_text: str, missing_symbols):
+    lower = (context_text or "").lower()
+
+    if error_type == "COMPILATION_ERROR" and missing_symbols:
+        class_names = [symbol for symbol in missing_symbols if symbol and "." not in symbol]
+        if class_names:
+            if len(class_names) == 1:
+                return f"Missing DTO class: {class_names[0]}"
+            return f"Missing DTO classes: {', '.join(class_names)}"
+
+        package_details = extract_missing_symbol_details(context_text)
+        package_names = [detail["name"] for detail in package_details if detail["kind"].lower() == "package"]
+        if package_names:
+            return f"Missing package or import: {package_names[0]}"
+
+    if error_type == "TEST_FAILURE" and is_database_integrity_issue(lower):
+        return "Database constraint violation (Duplicate Entry)"
+
+    return root_cause or what_is_wrong or "The build stopped on a blocking error."
+
+
+def build_fix_options(error_type: str, context_text: str, file_name: str | None, line: str | None, missing_symbols):
+    lower = (context_text or "").lower()
+    location = f"{file_name}:{line}" if file_name and line else file_name or "the failing file"
+    options = []
+
+    if error_type == "COMPILATION_ERROR":
+        package_details = extract_missing_symbol_details(context_text)
+        package_names = [detail["name"] for detail in package_details if detail["kind"].lower() == "package"]
+        package_name = package_names[0] if package_names else "com.cyhub.backend.dto.admin"
+
+        if missing_symbols:
+            joined = ", ".join(missing_symbols)
+            options.append(f"If the classes do not exist, create {joined} in package {package_name}.")
+            options.append(f"If the classes already exist, fix the import statements in {location}.")
+            options.append("If the DTOs were renamed or moved, update the package path in the controller/service references.")
+            return options
+
+        options.append(f"Open {location} and fix the missing symbol, import, or signature mismatch.")
+        options.append("Confirm the source file compiles with the same package structure used by the build.")
+        return options
+
+    if error_type == "TEST_FAILURE" and is_database_integrity_issue(lower):
+        options.append("Ensure the test creates unique data, such as UUIDs or randomized IDs.")
+        options.append("Clean or rollback the database state between tests so prior rows do not collide.")
+        options.append("Verify the entity unique constraints and fixture data agree on allowed values.")
+        options.append("Avoid reusing the same input record or primary key in repeated test runs.")
+        return options
+
+    if error_type == "TEST_FAILURE":
+        options.append("Reproduce the first failing test locally and confirm the expected result.")
+        options.append("Check whether the production code or the test assertion needs to change.")
+        options.append("Verify fixtures, mocks, and setup data for stale assumptions.")
+        return options
+
+    if error_type == "BUILD_CONFIG_ERROR" and ("must be unique" in lower or "duplicate declaration" in lower):
+        options.append(f"Remove duplicate entries from {location} so only one canonical declaration remains.")
+        options.append("Introduce dependency management or central version control to prevent repeated declarations.")
+        options.append("Clean up unused dependencies after the blocking duplicate is removed.")
+        return options
+
+    options.append("Open the first blocking error and fix the underlying source or configuration issue.")
+    options.append("Rerun the same pipeline only after the root error is resolved.")
+    return options
+
+
+def build_meaning(error_type: str, context_text: str, missing_symbols, db_details=None):
+    lower = (context_text or "").lower()
+    db_details = db_details or extract_database_integrity_details(context_text)
+
+    if error_type == "COMPILATION_ERROR" and missing_symbols:
+        if len(missing_symbols) == 1:
+            return "The compiler cannot resolve one referenced DTO or symbol, so the source tree and imports are out of sync."
+        return "The compiler cannot resolve multiple referenced DTOs or symbols, so the source tree and imports are out of sync."
+
+    if error_type == "TEST_FAILURE" and is_database_integrity_issue(lower):
+        if db_details.get("sqlError") or db_details.get("sqlState"):
+            return "A database uniqueness rule rejected the insert, which means the test data violates a unique constraint."
+        return "A database uniqueness rule rejected the insert, which means the test data is not unique enough for the schema."
+
+    if error_type == "TEST_FAILURE":
+        return "The observed behavior does not match the expected test result."
+
+    if error_type == "RUNTIME_ERROR":
+        return "The process stopped while executing application code."
+
+    if error_type == "BUILD_CONFIG_ERROR":
+        return "The build or pipeline configuration is inconsistent enough to stop task execution."
+
+    return "The build stopped on a blocking error."
+
+
+def build_likely_cause(error_type: str, context_text: str, missing_symbols):
+    lower = (context_text or "").lower()
+
+    if error_type == "COMPILATION_ERROR" and missing_symbols:
+        if len(missing_symbols) == 1:
+            return "The DTO was not created, moved, or imported correctly."
+        return "The DTOs were not created, moved, or imported correctly."
+
+    if error_type == "TEST_FAILURE" and is_database_integrity_issue(lower):
+        return "Test data is being reused, the database is not being reset, or the fixture violates a unique constraint."
+
+    if error_type == "TEST_FAILURE":
+        return "The test expectation, fixture, or production behavior changed."
+
+    if error_type == "BUILD_CONFIG_ERROR":
+        return "A build file, stage definition, or dependency declaration is malformed."
+
+    if error_type == "RUNTIME_ERROR":
+        return "The code hit a runtime exception or invalid state during execution."
+
+    return "The first blocking error line points to the active root cause."
+
+
+def format_analysis_output(
+    root_cause,
+    error_type,
+    file_name,
+    line,
+    class_or_function,
+    missing_symbols,
+    what_is_wrong,
+    exact_fix,
+    secondary_issues,
+    meaning=None,
+    likely_cause=None,
+    fix_options=None,
+    details=None,
+):
     location_bits = [bit for bit in [file_name, line] if bit]
     location = ":".join(location_bits) if location_bits else "Unknown location"
 
@@ -562,12 +784,34 @@ def format_analysis_output(root_failure_statement, error_type, file_name, line, 
     else:
         missing_symbol_block = ""
 
+    details_lines = []
+    if details:
+        for item in details:
+            if item:
+                details_lines.append(f"- {item}")
+    elif missing_symbols:
+        details_lines.extend(f"- Missing symbol: {symbol}" for symbol in missing_symbols)
+
+    details_block = f"DETAILS:\n" + "\n".join(details_lines) + "\n\n" if details_lines else ""
+
+    fix_option_lines = []
+    if fix_options:
+        for index, option in enumerate(fix_options, start=1):
+            fix_option_lines.append(f"{index}. {option}")
+    fix_options_block = f"FIX OPTIONS:\n" + "\n".join(fix_option_lines) + "\n\n" if fix_option_lines else ""
+
+    meaning_text = meaning or what_is_wrong
+    likely_text = likely_cause or "See the fix options below."
     secondary = "; ".join(secondary_issues) if secondary_issues else "None"
     return (
-        f"ROOT FAILURE: {root_failure_statement}\n\n"
-        f"ERROR TYPE: {error_type}\n\n"
+        f"ROOT CAUSE:\n{root_cause}\n\n"
+        f"ERROR TYPE:\n{error_type}\n\n"
         f"LOCATION:\n{location}\n\n"
         f"{missing_symbol_block}"
+        f"{details_block}"
+        f"MEANING:\n{meaning_text}\n\n"
+        f"LIKELY CAUSE:\n{likely_text}\n\n"
+        f"{fix_options_block}"
         f"WHAT IS WRONG: {what_is_wrong}\n\n"
         f"FIX: {exact_fix}\n\n"
         f"SECONDARY ISSUES: {secondary}"
@@ -693,6 +937,28 @@ def build_result(
     fingerprint = normalize_for_fingerprint(snippets, file_name, tool)
     requires_human_review = signature_id is None or confidence.upper() in {"LOW", "MEDIUM"} or not snippets
     verification_entities = extract_verification_entities(raw_log)
+    db_details = extract_database_integrity_details(raw_log)
+    symbol_details = extract_missing_symbol_details(raw_log)
+    refined_root_cause = build_human_root_cause(error_type, root_cause, what_is_wrong, raw_log, missing_symbols)
+    meaning = build_meaning(error_type, raw_log, missing_symbols, db_details)
+    likely_cause = build_likely_cause(error_type, raw_log, missing_symbols)
+    fix_options = build_fix_options(error_type, raw_log, file_name, line, missing_symbols)
+    details = []
+
+    if missing_symbols:
+        details.append("Missing symbols: " + ", ".join(missing_symbols))
+        package_names = [detail["name"] for detail in symbol_details if detail["kind"].lower() == "package"]
+        if package_names:
+            details.append("Location package: " + ", ".join(package_names))
+
+    if db_details.get("sqlError"):
+        details.append(f"SQL Error: {db_details['sqlError']}")
+
+    if db_details.get("sqlState"):
+        details.append(f"SQLState: {db_details['sqlState']}")
+
+    if db_details.get("duplicateValue"):
+        details.append(f"Duplicate value: {db_details['duplicateValue']}")
 
     return {
         "failureType": failure_type,
@@ -708,13 +974,17 @@ def build_result(
         "symbolKind": symbol_kind,
         "missingSymbols": missing_symbols,
         "errorMessage": snippets[0] if snippets else "No strong failure pattern matched",
-        "rootFailureStatement": root_failure_statement,
-        "rootCause": root_cause + location_hint(file_name, line, column),
+        "rootFailureStatement": build_root_failure_statement(error_type, refined_root_cause, file_name, line),
+        "rootCause": refined_root_cause + location_hint(file_name, line, column),
         "whatIsWrong": what_is_wrong,
         "fixRecommendation": fix,
         "secondaryIssues": secondary_issues,
+        "details": details,
+        "meaning": meaning,
+        "likelyCause": likely_cause,
+        "fixOptions": fix_options,
         "formattedAnalysis": format_analysis_output(
-            root_failure_statement,
+            refined_root_cause,
             error_type_display,
             file_name,
             line,
@@ -723,6 +993,10 @@ def build_result(
             what_is_wrong,
             fix,
             secondary_issues,
+            meaning=meaning,
+            likely_cause=likely_cause,
+            fix_options=fix_options,
+            details=details,
         ),
         "confidence": confidence,
         "analysisSource": "python-signature-catalog",
@@ -747,12 +1021,19 @@ def build_result(
 
 
 def fallback_result(text, raw_log, tool, file_name, line, column, snippets, location_evidence):
-    error_type = "COMPILATION_ERROR" if "error:" in text or "compilation failure" in text or "cannot find symbol" in text or "undefined reference" in text else "BUILD_CONFIG_ERROR"
+    if any(token in text for token in ["cannot find symbol", "compilation failure", "undefined reference", "package does not exist"]):
+        error_type = "COMPILATION_ERROR"
+    elif is_database_integrity_issue(text):
+        error_type = "TEST_FAILURE"
+    elif any(token in text for token in ["assertionerror", "assertion failed", "there are test failures", "test failed", "tests run:"]):
+        error_type = "TEST_FAILURE"
+    else:
+        error_type = "BUILD_CONFIG_ERROR"
     missing_symbol_details = extract_missing_symbol_details(raw_log)
     error_type_display = describe_error_type(error_type, raw_log, missing_symbol_details)
     what_is_wrong = infer_what_is_wrong(error_type, snippets[0] if snippets else "", raw_log, None, missing_symbol_details)
-    fix = "Open the first compiler-style error, fix the reported file and line, and rerun only after confirming the root error is resolved." if error_type == "COMPILATION_ERROR" else "Use the first blocking error line to identify the broken configuration or environment step, fix it, and rerun."
-    root_failure_statement = build_root_failure_statement(error_type, what_is_wrong, file_name, line)
+    fix = infer_exact_fix(error_type, what_is_wrong, file_name, line, raw_log, None, missing_symbol_details)
+    root_failure_statement = build_root_failure_statement(error_type, build_human_root_cause(error_type, what_is_wrong, what_is_wrong, raw_log, extract_missing_symbols(raw_log)), file_name, line)
     class_or_function = extract_class_or_function(raw_log)
     symbol_details = extract_symbol_details(raw_log) or {}
     missing_symbols = extract_missing_symbols(raw_log)

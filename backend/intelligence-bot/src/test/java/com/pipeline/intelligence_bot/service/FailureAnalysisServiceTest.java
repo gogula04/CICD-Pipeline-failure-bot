@@ -27,4 +27,22 @@ class FailureAnalysisServiceTest {
         assertTrue(result.get("rootCause").contains("missing symbol"));
         assertTrue(result.get("fixRecommendation").contains("compilation errors"));
     }
+
+    @Test
+    void analyzeFailure_classifiesDatabaseIntegrityErrors_asTestFailures() {
+        FailureAnalysisService service = new FailureAnalysisService();
+
+        String log = """
+                [ERROR] Failed tests:
+                [ERROR]   DuplicateEntryTest
+                [ERROR] SQL Error: 1062, SQLState: 23000
+                [ERROR] Duplicate entry 'abc' for key 'users.email'
+                """.trim();
+
+        Map<String, String> result = service.analyzeFailure(log);
+
+        assertEquals("Test Failure", result.get("failureType"));
+        assertEquals("Database constraint violation (Duplicate Entry)", result.get("rootCause"));
+        assertTrue(result.get("fixRecommendation").contains("unique test data"));
+    }
 }

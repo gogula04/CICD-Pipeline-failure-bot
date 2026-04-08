@@ -38,4 +38,29 @@ class EnterprisePipelineAnalysisServiceTest {
         assertTrue(String.valueOf(result.get("errorMessage")).contains("cannot find symbol"));
         assertTrue(String.valueOf(result.get("fixRecommendation")).contains("compiler error"));
     }
+
+    @Test
+    void fallbackAnalysis_classifiesDatabaseIntegrityErrors_asTestFailures() throws Exception {
+        EnterprisePipelineAnalysisService service =
+                new EnterprisePipelineAnalysisService(null, null, null, null);
+
+        String log = """
+                [ERROR] Failed tests:
+                [ERROR]   DuplicateEntryTest
+                [ERROR] SQL Error: 1062, SQLState: 23000
+                [ERROR] Duplicate entry 'abc' for key 'users.email'
+                """.trim();
+
+        Method method = EnterprisePipelineAnalysisService.class.getDeclaredMethod("fallbackAnalysis", String.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) method.invoke(service, log);
+
+        assertEquals("Test Failure", result.get("category"));
+        assertEquals("Test Failure", result.get("failureType"));
+        assertEquals("Database", result.get("tool"));
+        assertTrue(String.valueOf(result.get("rootCause")).contains("Duplicate Entry"));
+        assertTrue(String.valueOf(result.get("fixRecommendation")).contains("unique test data"));
+    }
 }

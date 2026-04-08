@@ -70,6 +70,19 @@ public class FailureAnalysisService {
         }
 
         else if (containsAny(lowerLog,
+                "sqlstate",
+                "duplicate entry",
+                "unique constraint",
+                "error 1062",
+                "duplicate key value violates unique constraint")) {
+
+            failureType = "Test Failure";
+            rootCause = "Database constraint violation (Duplicate Entry)";
+            fixRecommendation =
+                    "Use unique test data, reset the database between tests, and verify unique constraints";
+        }
+
+        else if (containsAny(lowerLog,
                 "must be unique",
                 "duplicate declaration",
                 "duplicate dependency")) {

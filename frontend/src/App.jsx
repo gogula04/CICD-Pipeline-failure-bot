@@ -62,7 +62,9 @@ export default function App() {
   const resolutionPlaybook = asArray(primaryFailure?.resolutionPlaybook);
   const logHighlights = asArray(primaryFailure?.logHighlights);
   const secondaryIssues = asArray(primaryFailure?.secondaryIssues);
+  const details = asArray(primaryFailure?.details);
   const missingSymbols = asArray(primaryFailure?.missingSymbols);
+  const fixOptions = asArray(primaryFailure?.fixOptions);
   const signalRanking = primaryFailure?.signalRanking || {};
   const relatedSignals = asArray(signalRanking.relatedSignals);
   const noiseSignals = asArray(signalRanking.noiseSignals);
@@ -340,11 +342,15 @@ export default function App() {
                 <TextBlock title="Root failure" body={primaryFailure?.rootFailureStatement || "No root-failure statement was generated."} />
                 <TextBlock title="Root cause" body={primaryFailure?.rootCause || "No root cause was extracted."} />
                 <TextBlock title="What is wrong" body={primaryFailure?.whatIsWrong || "No exact problem statement was generated."} />
+                <TextBlock title="Meaning" body={primaryFailure?.meaning || "No meaning was generated."} />
+                <TextBlock title="Likely cause" body={primaryFailure?.likelyCause || "No likely cause was generated."} />
                 <TextBlock title="Why this failed" body={primaryFailure?.whyExplanation || "No explanation was generated."} />
                 <TextBlock title="Recommended fix" body={primaryFailure?.fixRecommendation || "No recommendation was generated."} />
                 <TextBlock title="Fix diff suggestion" body={exactFixGuidance?.suggestedDiff || "No direct diff-style suggestion was generated."} />
                 <TextBlock title="Next best action" body={primaryFailure?.nextBestAction || "No next-step guidance was generated."} />
                 <TextBlock title="Leading error signal" body={primaryFailure?.errorMessage || "No highlighted error line available."} mono />
+                <ListBlock title="Details" items={details} emptyText="No extra details were extracted." mono />
+                <ListBlock title="Fix options" items={fixOptions} emptyText="No fix options were generated." />
                 {primaryFailure?.knowledgeGap ? (
                   <TextBlock title="Knowledge gap" body={primaryFailure.knowledgeGap} />
                 ) : null}

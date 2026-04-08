@@ -40,6 +40,21 @@ class AnalyzerRegressionTests(unittest.TestCase):
         self.assertIn("Missing classes", result["whatIsWrong"])
         self.assertIn("Create the missing classes", result["fixRecommendation"])
 
+    def test_database_integrity_error_is_classified_as_test_failure(self):
+        log = """
+[ERROR] Failed tests:
+[ERROR] Duplicate entry 'abc' for key 'users.email'
+[ERROR] SQL Error: 1062, SQLState: 23000
+[ERROR] Violation of unique constraint during test data setup
+""".strip()
+
+        result = analyzer.classify_and_fix(log)
+
+        self.assertEqual(result["errorType"], "TEST_FAILURE")
+        self.assertEqual(result["errorTypeDisplay"], "Test Failure - Database Integrity Error")
+        self.assertIn("Database constraint violation", result["rootCause"])
+        self.assertIn("unique test data", result["fixRecommendation"])
+
 
 if __name__ == "__main__":
     unittest.main()

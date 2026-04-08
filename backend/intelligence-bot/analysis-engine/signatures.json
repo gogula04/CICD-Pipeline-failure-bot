@@ -186,6 +186,26 @@
     "fixRecommendation": "Review the first lint or static-analysis finding and fix the underlying code style or correctness issue."
   },
   {
+    "id": "database-integrity-duplicate-entry",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Database",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 91,
+    "patterns": [
+      "sqlstate: 23000",
+      "sql error: 1062",
+      "error 1062",
+      "duplicate entry",
+      "unique constraint",
+      "duplicate key value violates unique constraint"
+    ],
+    "rootCause": "A database uniqueness constraint rejected duplicate data during the test or application run.",
+    "fixRecommendation": "Use unique test data, reset database state between runs, and verify the unique constraint or fixture data."
+  },
+  {
     "id": "pytest-failure",
     "failureType": "Test Failure",
     "category": "Test Failure",

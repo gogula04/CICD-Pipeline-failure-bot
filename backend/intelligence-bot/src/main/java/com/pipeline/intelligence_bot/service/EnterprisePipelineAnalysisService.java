@@ -596,6 +596,10 @@ public class EnterprisePipelineAnalysisService {
         analysis.put("whatIsWrong", firstNonBlank(asString(rawAnalysis.get("whatIsWrong")), rootCause));
         analysis.put("fixRecommendation", fixRecommendation);
         analysis.put("secondaryIssues", mergeStringList(rawAnalysis.get("secondaryIssues")));
+        analysis.put("details", mergeStringList(rawAnalysis.get("details")));
+        analysis.put("meaning", asString(rawAnalysis.get("meaning")));
+        analysis.put("likelyCause", asString(rawAnalysis.get("likelyCause")));
+        analysis.put("fixOptions", mergeStringList(rawAnalysis.get("fixOptions")));
         analysis.put("formattedAnalysis", asString(rawAnalysis.get("formattedAnalysis")));
         analysis.put("jobStatus", asString(job.get("status")));
         analysis.put("categoryDescription", categoryDescription(category));
@@ -2536,6 +2540,9 @@ public class EnterprisePipelineAnalysisService {
         String suggestedDiff = null;
         List<String> steps = new ArrayList<>();
         List<String> targetFiles = new ArrayList<>();
+        List<String> detailLines = mergeStringList(primaryFailureAnalysis.get("details"));
+        List<String> missingSymbols = mergeStringList(primaryFailureAnalysis.get("missingSymbols"));
+        String locationPackage = null;
 
         if (file != null) {
             targetFiles.add(file);
@@ -2544,9 +2551,37 @@ public class EnterprisePipelineAnalysisService {
         targetFiles.addAll(limitList(collectEntryPaths(safeList(commitAnalysis.get("likelyRelatedFiles"))), 3));
         List<String> dependencyCandidates = extractDependencyCandidates(primaryFailureAnalysis);
 
+        for (String detail : detailLines) {
+            String lowerDetail = lower(detail);
+
+            if (lowerDetail.startsWith("location package:")) {
+                locationPackage = detail.substring(detail.indexOf(':') + 1).trim();
+                break;
+            }
+        }
+
         if ("Pipeline Success".equals(category)) {
             summary = "No fix is required because the pipeline passed successfully.";
             steps.add("Keep this run as a healthy comparison baseline.");
+        } else if ("Code Compilation Failure".equals(category)
+                && containsAny(lowerError, "cannot find symbol", "package does not exist")) {
+            String packageName = firstNonBlank(locationPackage, "com.cyhub.backend.dto.admin");
+            String joinedSymbols = joinReadable(limitList(missingSymbols, 3));
+
+            summary = "Missing DTO classes: " + firstNonBlank(joinedSymbols, "AdminConversationSummary, AdminReplyRequest") + ".";
+            steps.add("If the classes do not exist, create them in package " + packageName + ".");
+            steps.add("If the classes already exist, fix the import statements in " + firstNonBlank(file, "the controller or service") + ".");
+            steps.add("If they were renamed or moved, update the package path in the controller/service references.");
+            suggestedDiff = "Create the missing DTO classes in " + packageName + " or update the imports in the controller/service.";
+        } else if ("Test Failure".equals(category)
+                && (containsAny(lowerError, "duplicate entry", "sqlstate", "unique constraint", "error 1062", "duplicate key value")
+                || containsAny(lower(asString(primaryFailureAnalysis.get("errorTypeDisplay"))), "database integrity"))) {
+            summary = "Database constraint violation (Duplicate Entry).";
+            steps.add("Ensure the test creates unique data, such as UUIDs or randomized IDs.");
+            steps.add("Clean or rollback the database state between tests so prior rows do not collide.");
+            steps.add("Verify the entity unique constraints and fixture data agree on allowed values.");
+            steps.add("Avoid reusing the same input record or primary key in repeated test runs.");
+            suggestedDiff = "Update the failing test or data generator so each insert uses unique identifiers and reset the database state between runs.";
         } else if (containsAny(lowerError, "must be unique", "duplicate dependency", "duplicate declaration")) {
             List<String> dependenciesToFix = dependencyCandidates.isEmpty()
                     ? List.of("the duplicated dependency declarations")
@@ -2714,6 +2749,13 @@ public class EnterprisePipelineAnalysisService {
             analysis.put("confidence", "HIGH");
             analysis.put("rootCause", "A compiler-visible source or generated-code error stopped the build.");
             analysis.put("fixRecommendation", "Open the first compiler error, fix the missing class/import/signature, and rerun the build.");
+        } else if (containsAny(lower, "sqlstate", "duplicate entry", "unique constraint", "error 1062", "duplicate key value violates unique constraint")) {
+            analysis.put("category", "Test Failure");
+            analysis.put("failureType", "Test Failure");
+            analysis.put("tool", detectTool(lower));
+            analysis.put("confidence", "HIGH");
+            analysis.put("rootCause", "Database constraint violation (Duplicate Entry)");
+            analysis.put("fixRecommendation", "Use unique test data, reset the database between tests, and verify the unique constraints.");
         } else if (containsAny(lower, "jobs config should contain", "chosen stage does not exist", ".gitlab-ci.yml", "mapping values are not allowed")) {
             analysis.put("category", "Pipeline Configuration Failure");
             analysis.put("failureType", "Pipeline Configuration Failure");
@@ -3133,6 +3175,10 @@ public class EnterprisePipelineAnalysisService {
     }
 
     private String detectTool(String lowerLog) {
+        if (containsAny(lowerLog, "sqlstate", "duplicate entry", "unique constraint", "integrity constraint", "sql error", "error 1062", "duplicate key value")) {
+            return "Database";
+        }
+
         if (containsAny(lowerLog, "maven", "pom.xml", "mvn ")) {
             return "Maven";
         }
