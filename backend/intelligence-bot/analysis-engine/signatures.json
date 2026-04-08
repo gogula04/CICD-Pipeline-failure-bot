@@ -1,0 +1,783 @@
+[
+  {
+    "id": "gitlab-invalid-yaml",
+    "failureType": "Pipeline Configuration Failure",
+    "category": "Pipeline Configuration Failure",
+    "tool": "GitLab CI",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 100,
+    "patterns": [
+      "jobs config should contain",
+      "chosen stage does not exist",
+      "mapping values are not allowed",
+      "did not find expected key",
+      ".gitlab-ci.yml"
+    ],
+    "rootCause": "The pipeline definition is invalid or refers to missing stages, jobs, or YAML structure.",
+    "fixRecommendation": "Review the changed GitLab CI configuration, validate YAML syntax, and verify job-to-stage wiring."
+  },
+  {
+    "id": "maven-duplicate-dependency",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Maven",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 99,
+    "patterns": [
+      "must be unique",
+      "duplicate declaration",
+      "non-parseable pom",
+      "failed to read artifact descriptor",
+      "pom.xml"
+    ],
+    "rootCause": "The Maven build configuration or dependency graph contains conflicting or invalid definitions.",
+    "fixRecommendation": "Inspect the changed Maven configuration and remove duplicate, invalid, or incompatible dependency declarations."
+  },
+  {
+    "id": "gradle-build-config",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Gradle",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 98,
+    "patterns": [
+      "build.gradle",
+      "settings.gradle",
+      "plugin with id",
+      "could not resolve all dependencies"
+    ],
+    "rootCause": "Gradle build configuration or plugin/dependency resolution is invalid for the current change set.",
+    "fixRecommendation": "Review the changed Gradle build files, dependency versions, and repository declarations."
+  },
+  {
+    "id": "npm-package-resolution",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Node",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 97,
+    "patterns": [
+      "npm err! enoent",
+      "unable to resolve dependency tree",
+      "eresolve",
+      "package.json",
+      "pnpm-lock.yaml",
+      "yarn.lock"
+    ],
+    "rootCause": "JavaScript package metadata or dependency resolution is inconsistent with the current code or lockfile state.",
+    "fixRecommendation": "Check package manifest and lockfile changes, then align dependency versions and install strategy."
+  },
+  {
+    "id": "python-package-resolution",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Python",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 96,
+    "patterns": [
+      "requirements.txt",
+      "pyproject.toml",
+      "poetry.lock",
+      "no matching distribution found",
+      "could not find a version that satisfies the requirement"
+    ],
+    "rootCause": "Python dependency metadata or package compatibility is invalid for the current environment.",
+    "fixRecommendation": "Review requirements or pyproject changes, then fix the package version, index source, or interpreter compatibility."
+  },
+  {
+    "id": "java-compilation",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Maven",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 95,
+    "patterns": [
+      "cannot find symbol",
+      "compilation failure",
+      "incompatible types",
+      "package does not exist"
+    ],
+    "rootCause": "Recent source changes introduced compiler-visible API, type, or import breakage.",
+    "fixRecommendation": "Start from the first compiler error and correct the missing symbol, type mismatch, or invalid import before rerunning."
+  },
+  {
+    "id": "cpp-compilation",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "CMake",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 94,
+    "patterns": [
+      "undefined reference",
+      "fatal error:",
+      "ld returned 1 exit status",
+      "cmakelists.txt"
+    ],
+    "rootCause": "Native compilation or linking failed because source, include, or build linkage changes are inconsistent.",
+    "fixRecommendation": "Fix the first compilation or linker error, then confirm target linkage and include paths are still valid."
+  },
+  {
+    "id": "python-syntax",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Python",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 93,
+    "patterns": [
+      "syntaxerror",
+      "indentationerror",
+      "taberror"
+    ],
+    "rootCause": "Python source changes introduced a syntax or indentation defect that prevents execution.",
+    "fixRecommendation": "Correct the reported Python syntax issue and rerun after confirming the module imports cleanly."
+  },
+  {
+    "id": "typescript-compilation",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Node",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 92,
+    "patterns": [
+      "ts2304",
+      "ts2322",
+      "ts2345",
+      "typescript",
+      "cannot find name"
+    ],
+    "rootCause": "TypeScript compilation failed because a recent change broke typing or symbol resolution.",
+    "fixRecommendation": "Fix the first TypeScript error and verify the changed interfaces, props, or imports still align."
+  },
+  {
+    "id": "eslint-or-lint",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Node",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "MEDIUM",
+    "priority": 91,
+    "patterns": [
+      "eslint",
+      "prettier",
+      "checkstyle",
+      "spotbugs",
+      "detekt"
+    ],
+    "rootCause": "Static analysis or linting checks are rejecting the current code changes.",
+    "fixRecommendation": "Review the first lint or static-analysis finding and fix the underlying code style or correctness issue."
+  },
+  {
+    "id": "pytest-failure",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Python",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "MEDIUM",
+    "priority": 90,
+    "patterns": [
+      "pytest",
+      "assertionerror",
+      "failed tests",
+      "short test summary info"
+    ],
+    "rootCause": "A Python test or fixture expectation no longer matches the current application behavior.",
+    "fixRecommendation": "Reproduce the first failing test locally, then verify whether the code or the test expectation should change."
+  },
+  {
+    "id": "junit-failure",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Maven",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "MEDIUM",
+    "priority": 89,
+    "patterns": [
+      "there are test failures",
+      "failures:",
+      "tests run:",
+      "surefire"
+    ],
+    "rootCause": "A Java test is failing because application behavior, fixtures, or test assumptions changed.",
+    "fixRecommendation": "Start with the earliest failing test case and verify whether the production change or the test expectation is incorrect."
+  },
+  {
+    "id": "ui-test-flake-or-failure",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Node",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": true,
+    "confidence": "MEDIUM",
+    "priority": 88,
+    "patterns": [
+      "playwright",
+      "cypress",
+      "selenium",
+      "element not found",
+      "timeout waiting for"
+    ],
+    "rootCause": "An end-to-end test could not observe the expected UI behavior or timing in the current build.",
+    "fixRecommendation": "Inspect whether the product behavior changed, selectors broke, or the test needs improved synchronization."
+  },
+  {
+    "id": "permission-denied",
+    "failureType": "Environment Failure",
+    "category": "Environment Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 87,
+    "patterns": [
+      "permission denied",
+      "operation not permitted",
+      "access is denied"
+    ],
+    "rootCause": "The runtime environment lacks required filesystem, process, or credential permissions.",
+    "fixRecommendation": "Verify runner permissions, service-account scopes, mounted volumes, and the path the job is trying to access."
+  },
+  {
+    "id": "missing-env-var",
+    "failureType": "Environment Failure",
+    "category": "Environment Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 86,
+    "patterns": [
+      "environment variable",
+      "is not set",
+      "missing required configuration",
+      "keyerror:"
+    ],
+    "rootCause": "A required environment variable, secret, or runtime configuration was not injected into the job.",
+    "fixRecommendation": "Review CI variables and secret mappings, then ensure the required configuration exists for this environment and branch."
+  },
+  {
+    "id": "auth-failure",
+    "failureType": "External System Failure",
+    "category": "External System Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 85,
+    "patterns": [
+      "401 unauthorized",
+      "403 forbidden",
+      "authentication failed",
+      "invalid token",
+      "access denied"
+    ],
+    "rootCause": "Authentication or authorization to a required service failed during pipeline execution.",
+    "fixRecommendation": "Validate the token, secret scope, service account, and target-resource permissions before rerunning."
+  },
+  {
+    "id": "ssl-or-certificate",
+    "failureType": "External System Failure",
+    "category": "External System Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 84,
+    "patterns": [
+      "ssl",
+      "certificate verify failed",
+      "x509",
+      "tls handshake timeout"
+    ],
+    "rootCause": "The pipeline could not establish a trusted TLS connection to a dependency or platform endpoint.",
+    "fixRecommendation": "Check certificate trust, endpoint certificates, proxy interception, and whether the runner trust store is current."
+  },
+  {
+    "id": "network-timeout",
+    "failureType": "External System Failure",
+    "category": "External System Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 83,
+    "patterns": [
+      "connection refused",
+      "timed out",
+      "timeout",
+      "connection reset by peer"
+    ],
+    "rootCause": "A required network call failed because the dependency was unreachable, slow, or unstable.",
+    "fixRecommendation": "Validate network reachability and service health, then retry only after confirming the dependency is stable."
+  },
+  {
+    "id": "dns-resolution",
+    "failureType": "External System Failure",
+    "category": "External System Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 82,
+    "patterns": [
+      "could not resolve host",
+      "name or service not known",
+      "temporary failure in name resolution",
+      "nodename nor servname provided"
+    ],
+    "rootCause": "DNS or service-discovery failed for a dependency needed by the pipeline.",
+    "fixRecommendation": "Verify DNS, service-discovery configuration, and the dependency endpoint before retrying."
+  },
+  {
+    "id": "disk-space",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "CI Runner",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 81,
+    "patterns": [
+      "no space left on device",
+      "disk quota exceeded",
+      "write failed, filesystem full"
+    ],
+    "rootCause": "The runner or execution environment ran out of available storage during the job.",
+    "fixRecommendation": "Clean or resize runner storage, then retry after confirming adequate disk headroom."
+  },
+  {
+    "id": "oom-memory",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "CI Runner",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 80,
+    "patterns": [
+      "outofmemoryerror",
+      "oomkilled",
+      "killed",
+      "cannot allocate memory"
+    ],
+    "rootCause": "The job exceeded available memory or the runtime process was killed by the platform.",
+    "fixRecommendation": "Increase memory limits or reduce peak memory usage before rerunning the pipeline."
+  },
+  {
+    "id": "docker-pull-failure",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "Docker",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 79,
+    "patterns": [
+      "error response from daemon",
+      "failed to pull image",
+      "manifest unknown",
+      "pull access denied"
+    ],
+    "rootCause": "The pipeline could not fetch a required container image from the registry.",
+    "fixRecommendation": "Verify image name, registry permissions, and tag availability before retrying."
+  },
+  {
+    "id": "docker-build-failure",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Docker",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 78,
+    "patterns": [
+      "dockerfile parse error",
+      "failed to solve with frontend dockerfile.v0",
+      "executor failed running",
+      "docker build"
+    ],
+    "rootCause": "A Docker build instruction or referenced asset is invalid for the current code revision.",
+    "fixRecommendation": "Inspect the changed Dockerfile and referenced build assets, then fix the first failing build step."
+  },
+  {
+    "id": "kubernetes-image-pull",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "Kubernetes",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 77,
+    "patterns": [
+      "imagepullbackoff",
+      "errimagepull",
+      "back-off pulling image"
+    ],
+    "rootCause": "Kubernetes could not retrieve the required container image for the workload.",
+    "fixRecommendation": "Validate registry access, image name, and image tag, then retry after the image is accessible."
+  },
+  {
+    "id": "terraform-failure",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Terraform",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 76,
+    "patterns": [
+      "terraform",
+      "error: invalid",
+      "unsupported argument",
+      "reference to undeclared resource"
+    ],
+    "rootCause": "Infrastructure-as-code changes introduced invalid Terraform configuration or references.",
+    "fixRecommendation": "Start with the first Terraform validation error and correct the resource, module, or variable mismatch."
+  },
+  {
+    "id": "helm-template-failure",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Helm",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 75,
+    "patterns": [
+      "helm",
+      "template:",
+      "render error in",
+      "yaml parse error on"
+    ],
+    "rootCause": "Helm chart values or templates are invalid for the current deployment configuration.",
+    "fixRecommendation": "Review the changed chart templates and values files, then fix the first render or YAML parse error."
+  },
+  {
+    "id": "database-connection",
+    "failureType": "External System Failure",
+    "category": "External System Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 74,
+    "patterns": [
+      "sqlstate",
+      "could not connect to server",
+      "connection to database failed",
+      "jdbc",
+      "psql:"
+    ],
+    "rootCause": "A required database was unavailable, unreachable, or misconfigured during the pipeline run.",
+    "fixRecommendation": "Verify database availability, credentials, network routing, and migration state before retrying."
+  },
+  {
+    "id": "migration-failure",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Unknown",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 73,
+    "patterns": [
+      "flyway",
+      "liquibase",
+      "migration failed",
+      "duplicate key value violates unique constraint"
+    ],
+    "rootCause": "A schema migration or data-change step is incompatible with the target database state.",
+    "fixRecommendation": "Review the failing migration and database assumptions before attempting another deploy or test run."
+  },
+  {
+    "id": "artifact-repository",
+    "failureType": "External System Failure",
+    "category": "External System Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 72,
+    "patterns": [
+      "artifact",
+      "nexus",
+      "jfrog",
+      "artifactory",
+      "failed to transfer file"
+    ],
+    "rootCause": "The build could not download or publish required artifacts from the repository service.",
+    "fixRecommendation": "Validate artifact repository health, credentials, and repository path configuration before retrying."
+  },
+  {
+    "id": "secret-missing",
+    "failureType": "Environment Failure",
+    "category": "Environment Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 71,
+    "patterns": [
+      "secret not found",
+      "failed to load secret",
+      "vault",
+      "parameter store"
+    ],
+    "rootCause": "A required secret or secret-management lookup failed during job startup or execution.",
+    "fixRecommendation": "Confirm the secret exists for the target environment and the runner has permission to retrieve it."
+  },
+  {
+    "id": "port-in-use",
+    "failureType": "Environment Failure",
+    "category": "Environment Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "MEDIUM",
+    "priority": 70,
+    "patterns": [
+      "address already in use",
+      "bind: address already in use",
+      "port is already allocated"
+    ],
+    "rootCause": "A required local port was already occupied in the execution environment.",
+    "fixRecommendation": "Free the conflicting process or randomize the port assignment before rerunning."
+  },
+  {
+    "id": "segmentation-fault",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "MEDIUM",
+    "priority": 69,
+    "patterns": [
+      "segmentation fault",
+      "core dumped",
+      "bus error"
+    ],
+    "rootCause": "A native process crashed unexpectedly, often due to binary incompatibility, memory issues, or unsafe native code.",
+    "fixRecommendation": "Inspect the crashing binary or dependency version, then confirm runtime compatibility and memory behavior."
+  },
+  {
+    "id": "runner-system-failure",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "CI Runner",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "HIGH",
+    "priority": 68,
+    "patterns": [
+      "runner system failure",
+      "executor failed",
+      "preparing environment",
+      "job failed (system failure)"
+    ],
+    "rootCause": "The CI runner failed before or during job execution due to platform instability or executor issues.",
+    "fixRecommendation": "Check runner health and executor logs, then retry only after the runner is stable."
+  },
+  {
+    "id": "null-pointer-runtime",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Unknown",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 67,
+    "patterns": [
+      "nullpointerexception",
+      "nil pointer dereference",
+      "null dereference",
+      "attempt to dereference"
+    ],
+    "rootCause": "Runtime code dereferenced a null or invalid object reference in the current change path.",
+    "fixRecommendation": "Inspect the reported call path, initialize or guard the referenced object, and confirm the contract at the failing boundary."
+  },
+  {
+    "id": "merge-conflict-artifact",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "Unknown",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 66,
+    "patterns": [
+      "<<<<<<<",
+      ">>>>>>>",
+      "merge conflict",
+      "conflict marker"
+    ],
+    "rootCause": "Unresolved merge-conflict content was committed into source, configuration, or test files.",
+    "fixRecommendation": "Resolve the conflict markers in the changed files, rebuild locally, and rerun after the merged logic is validated."
+  },
+  {
+    "id": "toolchain-arch-mismatch",
+    "failureType": "Build Configuration Failure",
+    "category": "Build Configuration Failure",
+    "tool": "CMake",
+    "owner": "Build engineering",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 65,
+    "patterns": [
+      "wrong architecture",
+      "exec format error",
+      "file in wrong format",
+      "arm",
+      "x86"
+    ],
+    "rootCause": "The selected toolchain, target architecture, or linked binary format does not match the CI build target.",
+    "fixRecommendation": "Verify compiler, linker, sysroot, and architecture flags, then align the CI toolchain with the intended target platform."
+  },
+  {
+    "id": "coverage-threshold-drop",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Unknown",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 64,
+    "patterns": [
+      "coverage threshold",
+      "coverage is below",
+      "minimum coverage",
+      "line coverage"
+    ],
+    "rootCause": "The current change reduced tested surface area below the required verification threshold.",
+    "fixRecommendation": "Inspect the changed code paths, add or restore tests for the uncovered behavior, and confirm the threshold definition is correct."
+  },
+  {
+    "id": "misra-or-coding-standard",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Unknown",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "MEDIUM",
+    "priority": 63,
+    "patterns": [
+      "misra",
+      "coding standard",
+      "rule violation",
+      "advisory rule",
+      "required rule"
+    ],
+    "rootCause": "Static analysis detected a coding-standard or safety-rule violation in the submitted changes.",
+    "fixRecommendation": "Review the cited rule, correct the unsafe or non-compliant construct, and document any justified deviation explicitly."
+  },
+  {
+    "id": "data-dictionary-mismatch",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Unknown",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 62,
+    "patterns": [
+      "data dictionary mismatch",
+      "dd_",
+      "dictionary entry",
+      "variable mapping mismatch"
+    ],
+    "rootCause": "Verification data definitions and implemented variable mappings are inconsistent.",
+    "fixRecommendation": "Compare the failing dd_ mapping against the source data dictionary and test expectations, then correct the variable linkage or schema."
+  },
+  {
+    "id": "rvstest-python-mismatch",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Python",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 61,
+    "patterns": [
+      "rvstest",
+      "python mismatch",
+      "verification mismatch",
+      "expected mapping does not match"
+    ],
+    "rootCause": "The rvstest verification path and Python-side expectation or implementation are out of sync.",
+    "fixRecommendation": "Review the rvstest asset, Python verification logic, and shared mappings together, then align the expected behavior before rerunning."
+  },
+  {
+    "id": "bool-pointer-mismatch",
+    "failureType": "Code Compilation Failure",
+    "category": "Code Compilation Failure",
+    "tool": "Unknown",
+    "owner": "Feature development team",
+    "supportsAutomatedRetry": false,
+    "confidence": "HIGH",
+    "priority": 60,
+    "patterns": [
+      "_bool",
+      "incompatible pointer",
+      "pointer from integer",
+      "pointer type mismatch"
+    ],
+    "rootCause": "A type contract mismatch exists between pointer-based and boolean or scalar data paths.",
+    "fixRecommendation": "Inspect the reported declaration and call site, then align the true data type across the interface and related verification assets."
+  },
+  {
+    "id": "stub-misconfiguration",
+    "failureType": "Test Failure",
+    "category": "Test Failure",
+    "tool": "Unknown",
+    "owner": "Feature team and QA",
+    "supportsAutomatedRetry": false,
+    "confidence": "MEDIUM",
+    "priority": 59,
+    "patterns": [
+      "stub",
+      "mock",
+      "unexpected call",
+      "no answer found"
+    ],
+    "rootCause": "A stub or mock was configured inconsistently with the real interface contract or current test flow.",
+    "fixRecommendation": "Review the failing stub configuration, expected interaction order, and interface signature before rerunning the verification step."
+  },
+  {
+    "id": "flaky-timeout-pattern",
+    "failureType": "Infrastructure Failure",
+    "category": "Infrastructure Failure",
+    "tool": "Unknown",
+    "owner": "Platform engineering",
+    "supportsAutomatedRetry": true,
+    "confidence": "MEDIUM",
+    "priority": 58,
+    "patterns": [
+      "flaky",
+      "intermittent",
+      "timed out waiting",
+      "retrying"
+    ],
+    "rootCause": "The failure pattern suggests timing-sensitive or intermittent behavior rather than a deterministic build break.",
+    "fixRecommendation": "Check recent failure history, resource contention, and unstable tests or dependencies before assigning root cause to code."
+  }
+]

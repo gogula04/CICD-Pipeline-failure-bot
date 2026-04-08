@@ -1,464 +1,904 @@
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
+from functools import lru_cache
+from pathlib import Path
+import hashlib
+import json
 import re
 
 app = Flask(__name__)
 
-# -----------------------------
-# Helpers: extraction functions
-# -----------------------------
-
 ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+SIGNATURE_CATALOG_PATH = Path(__file__).with_name("signatures.json")
+REQUIREMENT_ID_PATTERN = re.compile(r"\b[A-Z]{2,10}-[A-Z]{2,10}-\d+\b")
+DD_TOKEN_PATTERN = re.compile(r"\bdd_[A-Za-z0-9_]+\b")
+
+HIGHLIGHT_PATTERNS = [
+    re.compile(r"\berror\b", re.IGNORECASE),
+    re.compile(r"\bfail(?:ed|ure|ures)?\b", re.IGNORECASE),
+    re.compile(r"\bexception\b", re.IGNORECASE),
+    re.compile(r"\bnot found\b", re.IGNORECASE),
+    re.compile(r"\bpermission denied\b", re.IGNORECASE),
+    re.compile(r"\bconnection (refused|timed out|reset)\b", re.IGNORECASE),
+    re.compile(r"\btimeout\b", re.IGNORECASE),
+    re.compile(r"\bmust be unique\b", re.IGNORECASE),
+    re.compile(r"\bduplicate declaration\b", re.IGNORECASE),
+    re.compile(r"\brunner system failure\b", re.IGNORECASE),
+    re.compile(r"\bsegmentation fault\b", re.IGNORECASE),
+    re.compile(r"\bno space left on device\b", re.IGNORECASE),
+    re.compile(r"\bimagepullbackoff\b", re.IGNORECASE),
+]
+
+WARNING_PATTERN = re.compile(r"^\s*\[warning\]|\bwarning:", re.IGNORECASE)
+ROOT_STOP_PATTERN = re.compile(
+    r"\[error\]|build failure|compilation failure|cannot find symbol|undefined reference|exception|test failed|there are test failures|assertion(?:error| failed)?|nullpointer|segmentation fault|failed to execute goal",
+    re.IGNORECASE,
+)
+
+
+ERROR_TYPE_TO_CATEGORY = {
+    "COMPILATION_ERROR": "Code Compilation Failure",
+    "TEST_FAILURE": "Test Failure",
+    "RUNTIME_ERROR": "Code Compilation Failure",
+    "BUILD_CONFIG_ERROR": "Build Configuration Failure",
+    "ENVIRONMENT_ERROR": "Environment Failure",
+}
+
+
+@lru_cache(maxsize=1)
+def load_signatures():
+    with SIGNATURE_CATALOG_PATH.open("r", encoding="utf-8") as handle:
+        signatures = json.load(handle)
+
+    return sorted(signatures, key=lambda item: item.get("priority", 0), reverse=True)
+
 
 def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE.sub("", text or "")
 
-def pick_best(matches):
-    """Pick the most likely 'root-cause' match (first strong match)."""
-    return matches[0] if matches else None
 
 def extract_file_line_col(log: str):
-    """
-    Tries multiple patterns and returns best guess:
-    file, line, column, evidenceLine
-    """
     lines = log.splitlines()
-
     candidates = []
 
-    # Pattern A: Maven duplicate decl: "... @ line 145, column 21"
-    pat_mvn_line_col = re.compile(r"@\s*line\s*(\d+)\s*,\s*column\s*(\d+)", re.IGNORECASE)
-
-    # Pattern B: Java compiler format: "SomeFile.java:[23,10]"
-    pat_java_brackets = re.compile(r"([A-Za-z0-9_./\\-]+\.java):\[(\d+),(\d+)\]")
-
-    # Pattern C: GCC/Clang style: "file.c:123:45: error:"
-    pat_colon_style = re.compile(r"([A-Za-z0-9_./\\-]+\.(c|cc|cpp|h|hpp|java|kt|py|js|ts|go|rs|xml|yml|yaml|gradle)):(\d+):(\d+)")
-
-    # Pattern D: Python traceback: 'File "/path/x.py", line 17'
-    pat_py_trace = re.compile(r'File\s+"([^"]+)",\s+line\s+(\d+)', re.IGNORECASE)
-
-    # Pattern E: Generic "line X" mention with file in same line
-    pat_generic_file_line = re.compile(r"([A-Za-z0-9_./\\-]+\.(xml|yml|yaml|gradle|java|py|js|ts|c|cpp|hpp|h))\D+line\D+(\d+)", re.IGNORECASE)
-
-    # Pattern F: Java compiler error
-    pat_java_error = re.compile(r"([A-Za-z0-9_./\\-]+\.java):(\d+):\s*error:", re.IGNORECASE)
-
-    # Pattern G: C/C++ compiler error
-    pat_cpp_error = re.compile(r"([A-Za-z0-9_./\\-]+\.(c|cpp|cc|hpp|h)):(\d+):(\d+):\s*error:", re.IGNORECASE)
-
-    # Pattern H: Python traceback file and line
-    pat_py_error = re.compile(r'File\s+"([^"]+\.py)",\s+line\s+(\d+)', re.IGNORECASE)
-
-    # Pattern I: Gradle test failure: "at com.example.MyTest.testSomething(MyTest.java:45)"
-    pat_gradle_test = re.compile(r"at\s+[A-Za-z0-9_./\\-]+\(([^:]+):(\d+)\)", re.IGNORECASE)
-    # pytest: "E   AssertionError: assert 1 == 2 at /path/test_file.py:17"
-    pat_pytest_error = re.compile(r"at\s+([A-Za-z0-9_./\\-]+\.py):(\d+)", re.IGNORECASE)
-    #python compile error: "SyntaxError: invalid syntax in /path/file.py at line 10"
-    pat_py_syntax_error = re.compile(r"SyntaxError:.*in\s+([A-Za-z0-9_./\\-]+\.py)\s+at\s+line\s+(\d+)", re.IGNORECASE)
-    # CMake error: "CMakeLists.txt:10:5: error: ..."
-    pat_cmake_error = re.compile(r"([A-Za-z0-9_./\\-]+\.txt):(\d+):(\d+):\s*error:", re.IGNORECASE)
-    # Add more patterns as needed for different tools and languages
-
-
-    for i, raw in enumerate(lines):
-        line = raw.strip()
-
-        m = pat_java_brackets.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": m.group(2),
-                "evidence": raw
-            })
-            continue
-
-        m = pat_colon_style.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": m.group(4),
-                "evidence": raw
-            })
-            continue
-
-        m = pat_py_trace.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-
-        m = pat_generic_file_line.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-
-        # Maven @ line/column needs file separately (often pom.xml appears elsewhere)
-        m = pat_mvn_line_col.search(line)
-        if m:
-            candidates.append({
-                "file": None,  # we'll infer later if we see pom.xml
-                "line": m.group(1),
-                "column": m.group(2),
-                "evidence": raw
-            })
-            continue
-        m = pat_java_error.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-        m = pat_cpp_error.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": m.group(4),
-                "evidence": raw
-            })
-            continue
-        m = pat_py_error.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-        m = pat_gradle_test.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-        m = pat_pytest_error.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-        m = pat_py_syntax_error.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": None,
-                "evidence": raw
-            })
-            continue
-        m = pat_cmake_error.search(line)
-        if m:
-            candidates.append({
-                "file": m.group(1),
-                "line": m.group(2),
-                "column": m.group(2),
-                "evidence": raw
-            })
-            continue        
-
-    best = pick_best(candidates)
-
-    if not best:
-        return None, None, None, None
-
-    # Infer file for Maven dependency issues if pom.xml appears anywhere
-    if best["file"] is None:
-        log_lower = log.lower()
-        if "pom.xml" in log_lower or "maven" in log_lower or "dependency" in log_lower:
-            best["file"] = "pom.xml"
-            best["path"] = "/pom.xml"
-        elif "build.gradle" in log_lower or "gradle" in log_lower:
-            best["file"] = "build.gradle"
-        elif ".gitlab-ci.yml" in log_lower:
-             best["file"] = ".gitlab-ci.yml"
-        elif "cmakelists.txt" in log_lower or "cmake" in log_lower:
-            best["file"] = "CMakeLists.txt"
-        elif "makefile" in log_lower:
-            best["file"] = "Makefile"
-        elif "build.gradle" in log:
-            best["file"] = "build.gradle"
-        elif ".gitlab-ci.yml" in log:
-            best["file"] = ".gitlab-ci.yml"
-
-    return best["file"], best["line"], best["column"], best["evidence"]
-
-def extract_error_snippets(log: str, max_lines=6):
-    """
-    Returns a small list of the most relevant error lines.
-    """
-    lines = log.splitlines()
-    hits = []
-
     patterns = [
-        re.compile(r"\bERROR\b", re.IGNORECASE),
-        re.compile(r"\bFAIL(?:ED|URE|URES)?\b", re.IGNORECASE),
-        re.compile(r"\bexception\b", re.IGNORECASE),
-        re.compile(r"\bnot found\b", re.IGNORECASE),
-        re.compile(r"\bcannot find symbol\b", re.IGNORECASE),
-        re.compile(r"\bcompilation failure\b", re.IGNORECASE),
-        re.compile(r"\bduplicate declaration\b", re.IGNORECASE),
-        re.compile(r"\bmust be unique\b", re.IGNORECASE),
-        re.compile(r"\bpermission denied\b", re.IGNORECASE),
-        re.compile(r"\bconnection (refused|timed out)\b", re.IGNORECASE),
+        re.compile(r"([A-Za-z0-9_./\\-]+\.java):\[(\d+),(\d+)\]"),
+        re.compile(r"([A-Za-z0-9_./\\-]+\.(?:c|cc|cpp|h|hpp|java|kt|py|js|ts|tsx|go|rs|xml|yml|yaml|gradle|toml|txt|json|sh)):(\d+):(\d+)"),
+        re.compile(r"([A-Za-z0-9_./\\-]+\.(?:java|kt|py|js|ts|tsx|go|rs|xml|yml|yaml|gradle|toml|txt|json|sh)):(\d+):\s*error", re.IGNORECASE),
+        re.compile(r'File\s+"([^"]+\.py)",\s+line\s+(\d+)', re.IGNORECASE),
+        re.compile(r"([A-Za-z0-9_./\\-]+\.(?:xml|yml|yaml|gradle|java|py|js|ts|tsx|c|cpp|hpp|h|txt|json|toml|sh))\D+line\D+(\d+)", re.IGNORECASE),
+        re.compile(r"@\s*line\s*(\d+)\s*,\s*column\s*(\d+)", re.IGNORECASE),
+        re.compile(r"at\s+[A-Za-z0-9_.$/\\-]+\(([^:]+):(\d+)\)", re.IGNORECASE),
+        re.compile(r"([A-Za-z0-9_./\\-]+\.(?:xml|ya?ml|json|toml))\s*[:@]\s*line\s*(\d+)", re.IGNORECASE),
     ]
 
     for raw in lines:
         line = raw.strip()
         if not line:
             continue
-        if any(p.search(line) for p in patterns):
-            hits.append(raw)
+
+        for pattern in patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+
+            groups = match.groups()
+
+            if len(groups) == 3:
+                candidates.append(
+                    {
+                        "file": groups[0],
+                        "line": groups[1],
+                        "column": groups[2],
+                        "evidence": raw.strip(),
+                    }
+                )
+            elif len(groups) == 2 and groups[0].isdigit():
+                candidates.append(
+                    {
+                        "file": None,
+                        "line": groups[0],
+                        "column": groups[1],
+                        "evidence": raw.strip(),
+                    }
+                )
+            elif len(groups) == 2:
+                candidates.append(
+                    {
+                        "file": groups[0],
+                        "line": groups[1],
+                        "column": None,
+                        "evidence": raw.strip(),
+                    }
+                )
+
+            break
+
+    best = candidates[0] if candidates else {"file": None, "line": None, "column": None, "evidence": None}
+
+    if best["file"] is None:
+        lower = log.lower()
+
+        if ".gitlab-ci.yml" in lower:
+            best["file"] = ".gitlab-ci.yml"
+        elif "pom.xml" in lower or "maven" in lower:
+            best["file"] = "pom.xml"
+        elif "build.gradle" in lower or "gradle" in lower:
+            best["file"] = "build.gradle"
+        elif "cmakelists.txt" in lower or "cmake" in lower:
+            best["file"] = "CMakeLists.txt"
+        elif "makefile" in lower:
+            best["file"] = "Makefile"
+        elif "dockerfile" in lower:
+            best["file"] = "Dockerfile"
+        elif "package.json" in lower:
+            best["file"] = "package.json"
+        elif "requirements.txt" in lower:
+            best["file"] = "requirements.txt"
+        elif "pyproject.toml" in lower:
+            best["file"] = "pyproject.toml"
+
+    return best["file"], best["line"], best["column"], best["evidence"]
+
+
+def extract_error_snippets(log: str, max_lines: int = 8):
+    hits = []
+
+    for raw in log.splitlines():
+        line = raw.strip()
+
+        if not line:
+            continue
+
+        if any(pattern.search(line) for pattern in HIGHLIGHT_PATTERNS):
+            hits.append(line)
+
         if len(hits) >= max_lines:
             break
 
     return hits
 
-# -----------------------------
-# Classification + Fix templates
-# -----------------------------
+
+def is_warning_line(line: str) -> bool:
+    return bool(WARNING_PATTERN.search(line or ""))
+
+
+def failure_specificity_score(line: str) -> int:
+    lower = (line or "").lower()
+
+    if not lower or is_warning_line(line):
+        return 0
+
+    score = 0
+
+    if "[error]" in lower:
+        score += 25
+
+    if "cannot find symbol" in lower or "package " in lower and "does not exist" in lower:
+        return score + 100
+    if "undefined reference" in lower:
+        return score + 95
+    if "compilation failure" in lower or " error:" in lower:
+        return score + 90
+    if "assertionerror" in lower or "assertion failed" in lower or "there are test failures" in lower or "test failed" in lower:
+        return score + 88
+    if "nullpointerexception" in lower or "segmentation fault" in lower or "exception" in lower:
+        return score + 84
+    if "build failure" in lower or "failed to execute goal" in lower:
+        return score + 75
+    if "permission denied" in lower or "command not found" in lower or "environment variable" in lower:
+        return score + 72
+    if "[error]" in lower:
+        return score + 60
+
+    return 0
+
+
+def find_root_failure(log: str):
+    lines = log.splitlines()
+
+    for idx, raw in enumerate(lines):
+        line = raw.strip()
+
+        if not line or is_warning_line(line):
+            continue
+
+        if not ROOT_STOP_PATTERN.search(line):
+            continue
+
+        best_idx = idx
+        best_line = line
+        best_score = failure_specificity_score(line)
+
+        for candidate_idx in range(idx, min(len(lines), idx + 8)):
+            candidate = lines[candidate_idx].strip()
+
+            if not candidate or is_warning_line(candidate):
+                continue
+
+            candidate_score = failure_specificity_score(candidate)
+
+            if candidate_score > best_score:
+                best_idx = candidate_idx
+                best_line = candidate
+                best_score = candidate_score
+
+        context_lines = [
+            lines[candidate_idx].strip()
+            for candidate_idx in range(idx, min(len(lines), best_idx + 6))
+            if lines[candidate_idx].strip()
+        ]
+
+        return {
+            "startIndex": idx,
+            "rootIndex": best_idx,
+            "starterLine": line,
+            "rootLine": best_line,
+            "contextLines": context_lines,
+        }
+
+    fallback_line = next((line.strip() for line in lines if line.strip()), "")
+    return {
+        "startIndex": 0,
+        "rootIndex": 0,
+        "starterLine": fallback_line,
+        "rootLine": fallback_line,
+        "contextLines": [fallback_line] if fallback_line else [],
+    }
+
+
+def detect_tool(text: str, matched_signature: dict | None) -> str:
+    if matched_signature and matched_signature.get("tool"):
+        return matched_signature["tool"]
+
+    if "maven" in text or "pom.xml" in text or "mvn " in text:
+        return "Maven"
+    if "gradle" in text or "build.gradle" in text:
+        return "Gradle"
+    if "pytest" in text or ".py" in text or "python" in text:
+        return "Python"
+    if "npm" in text or "node" in text or "yarn" in text or "pnpm" in text:
+        return "Node"
+    if ".gitlab-ci.yml" in text or "gitlab" in text:
+        return "GitLab CI"
+    if "cmake" in text or "cmakelists.txt" in text:
+        return "CMake"
+    if "terraform" in text:
+        return "Terraform"
+    if "helm" in text:
+        return "Helm"
+    if "docker" in text:
+        return "Docker"
+    if "kubernetes" in text or "kubectl" in text:
+        return "Kubernetes"
+    return "Unknown"
+
+
+def extract_class_or_function(text: str):
+    patterns = [
+        re.compile(r"location:\s+class\s+([A-Za-z0-9_$.]+)", re.IGNORECASE),
+        re.compile(r"location:\s+interface\s+([A-Za-z0-9_$.]+)", re.IGNORECASE),
+        re.compile(r"symbol:\s+method\s+([A-Za-z0-9_$.<>]+)", re.IGNORECASE),
+        re.compile(r"symbol:\s+class\s+([A-Za-z0-9_$.<>]+)", re.IGNORECASE),
+        re.compile(r"at\s+([A-Za-z0-9_$.]+)\(", re.IGNORECASE),
+        re.compile(r"\bfunction\s+([A-Za-z0-9_$.]+)", re.IGNORECASE),
+    ]
+
+    for pattern in patterns:
+        match = pattern.search(text or "")
+        if match:
+            return match.group(1)
+
+    return None
+
+
+def extract_symbol_details(text: str):
+    details = extract_missing_symbol_details(text)
+    return details[0] if details else None
+
+
+def extract_missing_symbol_details(text: str):
+    patterns = [
+        re.compile(r"cannot find symbol\s*:?\s*(class|method|variable)\s+([A-Za-z0-9_$.<>]+)", re.IGNORECASE),
+        re.compile(r"symbol:\s+(class|method|variable)\s+([A-Za-z0-9_$.<>]+)", re.IGNORECASE),
+        re.compile(r"package\s+([A-Za-z0-9_.]+)\s+does not exist", re.IGNORECASE),
+        re.compile(r"undefined reference to [`']?([A-Za-z0-9_$.<>:]+)", re.IGNORECASE),
+        re.compile(r"No module named ['\"]?([A-Za-z0-9_$.]+)", re.IGNORECASE),
+        re.compile(r"dependency\s+([A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+)", re.IGNORECASE),
+    ]
+
+    details = []
+    seen = set()
+
+    for pattern in patterns:
+        for match in pattern.finditer(text or ""):
+            groups = match.groups()
+
+            if len(groups) == 2:
+                kind, name = groups
+            elif "package" in pattern.pattern:
+                kind, name = "package", groups[0]
+            elif "undefined reference" in pattern.pattern:
+                kind, name = "symbol", groups[0]
+            elif "No module named" in pattern.pattern:
+                kind, name = "module", groups[0]
+            elif "dependency" in pattern.pattern:
+                kind, name = "dependency", groups[0]
+            else:
+                continue
+
+            key = (kind.lower(), name)
+            if key in seen:
+                continue
+
+            seen.add(key)
+            details.append({"kind": kind, "name": name})
+
+    return details
+
+
+def extract_missing_symbols(text: str):
+    return [detail["name"] for detail in extract_missing_symbol_details(text)]
+
+
+def infer_error_type(root_line: str, context_text: str, matched_signature: dict | None):
+    lower = (context_text or root_line or "").lower()
+
+    if matched_signature:
+        category = matched_signature.get("category")
+
+        if category == "Code Compilation Failure":
+            return "COMPILATION_ERROR"
+        if category == "Test Failure":
+            return "TEST_FAILURE"
+        if category in {"Build Configuration Failure", "Pipeline Configuration Failure"}:
+            return "BUILD_CONFIG_ERROR"
+        if category in {"Environment Failure", "Infrastructure Failure", "External System Failure"}:
+            return "ENVIRONMENT_ERROR"
+
+    if any(token in lower for token in ["cannot find symbol", "undefined reference", "package ", "compilation failure", " error:"]):
+        return "COMPILATION_ERROR"
+    if any(token in lower for token in ["assertionerror", "assertion failed", "there are test failures", "test failed", "tests run:"]):
+        return "TEST_FAILURE"
+    if any(token in lower for token in ["nullpointerexception", "segmentation fault", "exception"]):
+        return "RUNTIME_ERROR"
+    if any(token in lower for token in ["must be unique", "duplicate declaration", "build failure", "failed to execute goal", ".gitlab-ci.yml", "yaml"]):
+        return "BUILD_CONFIG_ERROR"
+    if any(token in lower for token in ["permission denied", "command not found", "environment variable", "no such file or directory"]):
+        return "ENVIRONMENT_ERROR"
+
+    return "BUILD_CONFIG_ERROR" if "[error]" in lower else "ENVIRONMENT_ERROR"
+
+
+def describe_error_type(error_type: str, context_text: str, missing_symbol_details=None):
+    lower = (context_text or "").lower()
+    details = missing_symbol_details or extract_missing_symbol_details(context_text)
+
+    if error_type == "COMPILATION_ERROR":
+        if "cannot find symbol" in lower and details:
+            class_count = sum(1 for detail in details if detail["kind"].lower() == "class")
+            if class_count > 1:
+                return "Compilation Failure - Missing Classes"
+            if any(detail["kind"].lower() == "class" for detail in details):
+                return "Compilation Failure - Missing Class"
+            if any(detail["kind"].lower() == "method" for detail in details):
+                return "Compilation Failure - Missing Method"
+            if any(detail["kind"].lower() == "variable" for detail in details):
+                return "Compilation Failure - Missing Variable"
+        if "package " in lower and "does not exist" in lower:
+            return "Compilation Failure - Missing Package"
+        if "undefined reference" in lower:
+            return "Compilation Failure - Undefined Reference"
+        return "Compilation Failure"
+
+    if error_type == "TEST_FAILURE":
+        return "Test Failure - Assertion Failure" if "assert" in lower else "Test Failure"
+
+    if error_type == "RUNTIME_ERROR":
+        return "Runtime Failure - Null Pointer" if "nullpointer" in lower else "Runtime Failure"
+
+    if error_type == "BUILD_CONFIG_ERROR":
+        return "Build Configuration Failure - Duplicate Dependency" if "duplicate" in lower or "must be unique" in lower else "Build Configuration Failure"
+
+    if error_type == "ENVIRONMENT_ERROR":
+        return "Environment Failure - Missing Tool" if "command not found" in lower else "Environment Failure"
+
+    return error_type
+
+
+def infer_what_is_wrong(error_type: str, root_line: str, context_text: str, matched_signature: dict | None, missing_symbol_details=None):
+    lower = (context_text or root_line or "").lower()
+    symbol = extract_symbol_details(context_text)
+    details = missing_symbol_details or extract_missing_symbol_details(context_text)
+
+    if error_type == "COMPILATION_ERROR":
+        if "cannot find symbol" in lower and details:
+            class_names = [detail["name"] for detail in details if detail["kind"].lower() == "class"]
+            method_names = [detail["name"] for detail in details if detail["kind"].lower() == "method"]
+            variable_names = [detail["name"] for detail in details if detail["kind"].lower() == "variable"]
+
+            if class_names:
+                if len(class_names) == 1:
+                    return f"Missing class '{class_names[0]}' is referenced but not available on the compile classpath."
+                return f"Missing classes {', '.join(class_names)} are referenced but not available on the compile classpath."
+            if method_names:
+                if len(method_names) == 1:
+                    return f"Missing method '{method_names[0]}' is referenced but not defined with the expected signature."
+                return f"Missing methods {', '.join(method_names)} are referenced but not defined with the expected signature."
+            if variable_names:
+                if len(variable_names) == 1:
+                    return f"Missing variable '{variable_names[0]}' is referenced but not defined in scope."
+                return f"Missing variables {', '.join(variable_names)} are referenced but not defined in scope."
+        if "package " in lower and "does not exist" in lower and symbol:
+            return f"Package '{symbol['name']}' is imported or referenced, but it is not available on the compile classpath."
+        if "undefined reference" in lower and symbol:
+            return f"Symbol '{symbol['name']}' is declared or used, but no matching definition is available at link time."
+        return "Source code or generated code contains a compile-time error that stopped the build."
+
+    if error_type == "TEST_FAILURE":
+        if "assertion" in lower:
+            return "A test assertion failed because actual behavior does not match the expected result."
+        return "A test case failed and caused the build to stop."
+
+    if error_type == "RUNTIME_ERROR":
+        if "nullpointerexception" in lower:
+            return "A null reference was dereferenced during execution."
+        if "segmentation fault" in lower:
+            return "The process crashed due to invalid memory access."
+        return "A runtime exception stopped execution."
+
+    if error_type == "BUILD_CONFIG_ERROR":
+        if "must be unique" in lower or "duplicate declaration" in lower:
+            return "The build configuration declares the same dependency or setting more than once."
+        if ".gitlab-ci.yml" in lower or "yaml" in lower:
+            return "The pipeline or build configuration file is invalid."
+        return "A build or configuration problem stopped dependency resolution or task execution."
+
+    if error_type == "ENVIRONMENT_ERROR":
+        if "permission denied" in lower:
+            return "The job does not have permission to access a required file, tool, or resource."
+        if "command not found" in lower:
+            return "A required tool or executable is missing from the environment."
+        return "The environment is missing a required dependency, configuration, or permission."
+
+    if matched_signature:
+        return matched_signature.get("rootCause", "The build stopped on a blocking error.")
+
+    return "The build stopped on a blocking error."
+
+
+def infer_exact_fix(error_type: str, what_is_wrong: str, file_name: str | None, line: str | None, context_text: str, matched_signature: dict | None, missing_symbol_details=None):
+    location = f"{file_name}:{line}" if file_name and line else file_name
+    symbol = extract_symbol_details(context_text)
+    details = missing_symbol_details or extract_missing_symbol_details(context_text)
+
+    if error_type == "COMPILATION_ERROR":
+        class_names = [detail["name"] for detail in details if detail["kind"].lower() == "class"]
+        method_names = [detail["name"] for detail in details if detail["kind"].lower() == "method"]
+        package_names = [detail["name"] for detail in details if detail["kind"].lower() == "package"]
+
+        if class_names:
+            if len(class_names) == 1:
+                return f"Create, restore, or import class '{class_names[0]}' in the correct package, and make sure it is committed and on the compile classpath."
+            joined = ", ".join(class_names)
+            return f"Create the missing classes {joined} in the correct package, or fix the imports if they already exist."
+        if method_names:
+            if len(method_names) == 1:
+                return f"Define method '{method_names[0]}' or update the call site to the correct method name and signature."
+            return f"Define the missing methods {', '.join(method_names)} or update their call sites to the correct signatures."
+        if package_names:
+            if len(package_names) == 1:
+                return f"Fix the import for package '{package_names[0]}' or add the missing dependency that provides it."
+            return f"Fix the imports for packages {', '.join(package_names)} or add the dependencies that provide them."
+        return f"Open {location or 'the first compiler error location'}, fix the missing symbol/import/syntax issue, and rerun the build."
+
+    if matched_signature and matched_signature.get("fixRecommendation"):
+        fix = matched_signature["fixRecommendation"]
+        return f"{fix} Start with {location}." if location else fix
+
+    if error_type == "TEST_FAILURE":
+        return f"Open {location or 'the first failing test'}, correct the failing assertion or the code under test, and rerun only the failing test suite."
+
+    if error_type == "RUNTIME_ERROR":
+        return f"Inspect {location or 'the failing stack frame'}, add the required null/validity guard or fix the crashing logic, and rerun the affected job."
+
+    if error_type == "BUILD_CONFIG_ERROR":
+        if "must be unique" in context_text.lower() or "duplicate declaration" in context_text.lower():
+            return f"Remove the duplicate dependency or configuration entry in {location or 'the build file'} so only one canonical declaration remains."
+        return f"Correct the invalid build or pipeline configuration in {location or 'the configuration file'} and rerun the pipeline."
+
+    return f"Fix the missing environment/tooling prerequisite at {location or 'the failing step'} and rerun the job."
+
+
+def build_root_failure_statement(error_type: str, what_is_wrong: str, file_name: str | None, line: str | None):
+    location = f" at {file_name}:{line}" if file_name and line else f" in {file_name}" if file_name else ""
+    return f"{error_type}: {what_is_wrong}{location}"
+
+
+def extract_secondary_issues(log: str, root_line: str, max_items: int = 5):
+    issues = []
+    seen = set()
+    root_normalized = (root_line or "").strip().lower()
+    secondary_patterns = [
+        re.compile(r"^\s*\[warning\].+", re.IGNORECASE),
+        re.compile(r"\bmust be unique\b", re.IGNORECASE),
+        re.compile(r"\bduplicate declaration\b", re.IGNORECASE),
+        re.compile(r"\bdeprecated\b", re.IGNORECASE),
+        re.compile(r"\bskipped\b", re.IGNORECASE),
+        re.compile(r"\bwarning:\b", re.IGNORECASE),
+    ]
+
+    for raw in log.splitlines():
+        line = raw.strip()
+        lower = line.lower()
+
+        if not line or lower == root_normalized:
+            continue
+
+        if any(pattern.search(line) for pattern in secondary_patterns):
+            normalized = re.sub(r"\s+", " ", lower)
+
+            if normalized in seen:
+                continue
+
+            seen.add(normalized)
+            issues.append(line)
+
+        if len(issues) >= max_items:
+            break
+
+    return issues
+
+
+def format_analysis_output(root_failure_statement, error_type, file_name, line, class_or_function, missing_symbols, what_is_wrong, exact_fix, secondary_issues):
+    location_bits = [bit for bit in [file_name, line] if bit]
+    location = ":".join(location_bits) if location_bits else "Unknown location"
+
+    if class_or_function:
+        location += f" ({class_or_function})"
+
+    if missing_symbols:
+        symbol_lines = "\n".join(f"- {symbol}" for symbol in missing_symbols)
+        missing_symbol_block = f"MISSING SYMBOLS:\n{symbol_lines}\n\n"
+    else:
+        missing_symbol_block = ""
+
+    secondary = "; ".join(secondary_issues) if secondary_issues else "None"
+    return (
+        f"ROOT FAILURE: {root_failure_statement}\n\n"
+        f"ERROR TYPE: {error_type}\n\n"
+        f"LOCATION:\n{location}\n\n"
+        f"{missing_symbol_block}"
+        f"WHAT IS WRONG: {what_is_wrong}\n\n"
+        f"FIX: {exact_fix}\n\n"
+        f"SECONDARY ISSUES: {secondary}"
+    )
+
+
+def match_signature(log_text: str):
+    for signature in load_signatures():
+        for pattern in signature.get("patterns", []):
+            if pattern.lower() in log_text:
+                return signature, pattern
+
+        for regex in signature.get("regexPatterns", []):
+            if re.search(regex, log_text, re.IGNORECASE):
+                return signature, regex
+
+    return None, None
+
+
+def normalize_for_fingerprint(snippets, file_name: str | None, tool: str | None):
+    basis = []
+
+    if file_name:
+        basis.append(file_name.lower())
+
+    if tool:
+        basis.append(tool.lower())
+
+    for snippet in snippets[:5]:
+        normalized = re.sub(r"\b[0-9a-f]{7,40}\b", "<sha>", snippet.lower())
+        normalized = re.sub(r"\b\d+\b", "<num>", normalized)
+        basis.append(normalized)
+
+    if not basis:
+        basis.append("unknown-failure")
+
+    joined = "\n".join(basis).encode("utf-8")
+    return hashlib.sha256(joined).hexdigest()[:16]
+
+
+def extract_requirement_ids(log: str):
+    return sorted(set(REQUIREMENT_ID_PATTERN.findall(log or "")))
+
+
+def extract_verification_entities(log: str):
+    lower = (log or "").lower()
+    return {
+        "requirementIds": extract_requirement_ids(log),
+        "dataDictionaryVariables": sorted(set(DD_TOKEN_PATTERN.findall(log or ""))),
+        "rvstestReferenced": "rvstest" in lower,
+        "pythonVerificationReferenced": "pytest" in lower or ("python" in lower and "test" in lower),
+        "stubReferenced": "stub" in lower or "mock" in lower,
+        "coverageReferenced": "coverage" in lower or "threshold" in lower,
+    }
+
+
+def location_hint(file_name, line, column):
+    if not file_name and not line:
+        return ""
+
+    bits = [file_name or "unknown file"]
+    if line:
+        bits.append(str(line))
+    if column:
+        bits.append(str(column))
+    return " at " + ":".join(bits)
+
+
+def recommendation_policy(confidence: str, matched_signature: dict | None):
+    if matched_signature is None:
+        return "Guided triage"
+
+    if confidence.upper() in {"CRITICAL", "VERY HIGH", "HIGH"}:
+        return "High-confidence recommendation"
+
+    return "Confidence-gated recommendation"
+
+
+def next_best_action(category: str, supports_retry: bool):
+    if supports_retry:
+        return "Verify the external or infrastructure dependency first, then retry the affected job or pipeline."
+
+    if category == "Pipeline Configuration Failure":
+        return "Inspect the changed CI configuration first and validate syntax before rerunning."
+
+    if category == "Build Configuration Failure":
+        return "Review recent build-file changes before inspecting downstream compiler noise."
+
+    if category == "Test Failure":
+        return "Reproduce the first failing test locally and confirm whether code or fixture changes caused it."
+
+    return "Inspect the first high-signal error lines, review the recent diff, and confirm the true root cause before rerunning."
+
+
+def build_result(
+    failure_type: str,
+    category: str,
+    root_cause: str,
+    fix: str,
+    confidence: str,
+    tool: str,
+    file_name: str | None,
+    line: str | None,
+    column: str | None,
+    snippets,
+    location_evidence: str | None,
+    supports_retry: bool,
+    owner: str,
+    signature_id: str | None,
+    matched_pattern: str | None,
+    raw_log: str,
+    error_type: str,
+    error_type_display: str,
+    root_failure_statement: str,
+    what_is_wrong: str,
+    class_or_function: str | None,
+    symbol_name: str | None,
+    symbol_kind: str | None,
+    missing_symbols,
+    secondary_issues,
+):
+    confidence = confidence or "LOW"
+    fingerprint = normalize_for_fingerprint(snippets, file_name, tool)
+    requires_human_review = signature_id is None or confidence.upper() in {"LOW", "MEDIUM"} or not snippets
+    verification_entities = extract_verification_entities(raw_log)
+
+    return {
+        "failureType": failure_type,
+        "errorType": error_type,
+        "errorTypeDisplay": error_type_display,
+        "category": category,
+        "tool": tool,
+        "file": file_name,
+        "line": line,
+        "column": column,
+        "classOrFunction": class_or_function,
+        "symbolName": symbol_name,
+        "symbolKind": symbol_kind,
+        "missingSymbols": missing_symbols,
+        "errorMessage": snippets[0] if snippets else "No strong failure pattern matched",
+        "rootFailureStatement": root_failure_statement,
+        "rootCause": root_cause + location_hint(file_name, line, column),
+        "whatIsWrong": what_is_wrong,
+        "fixRecommendation": fix,
+        "secondaryIssues": secondary_issues,
+        "formattedAnalysis": format_analysis_output(
+            root_failure_statement,
+            error_type_display,
+            file_name,
+            line,
+            class_or_function,
+            missing_symbols,
+            what_is_wrong,
+            fix,
+            secondary_issues,
+        ),
+        "confidence": confidence,
+        "analysisSource": "python-signature-catalog",
+        "signatureId": signature_id,
+        "matchedPattern": matched_pattern,
+        "failureFingerprint": fingerprint,
+        "recommendedOwner": owner,
+        "supportsAutomatedRetry": supports_retry,
+        "requiresHumanReview": requires_human_review,
+        "recommendationPolicy": recommendation_policy(confidence, {"id": signature_id} if signature_id else None),
+        "novelFailure": signature_id is None,
+        "nextBestAction": next_best_action(category, supports_retry),
+        "knowledgeGap": None if signature_id else "No catalog signature matched this failure pattern exactly.",
+        "signals": ["catalog signature match"] if signature_id else ["unknown failure fingerprint generated"],
+        "requirementIds": verification_entities["requirementIds"],
+        "verificationEntities": verification_entities,
+        "evidence": {
+            "locationLine": location_evidence,
+            "snippets": snippets,
+        },
+    }
+
+
+def fallback_result(text, raw_log, tool, file_name, line, column, snippets, location_evidence):
+    error_type = "COMPILATION_ERROR" if "error:" in text or "compilation failure" in text or "cannot find symbol" in text or "undefined reference" in text else "BUILD_CONFIG_ERROR"
+    missing_symbol_details = extract_missing_symbol_details(raw_log)
+    error_type_display = describe_error_type(error_type, raw_log, missing_symbol_details)
+    what_is_wrong = infer_what_is_wrong(error_type, snippets[0] if snippets else "", raw_log, None, missing_symbol_details)
+    fix = "Open the first compiler-style error, fix the reported file and line, and rerun only after confirming the root error is resolved." if error_type == "COMPILATION_ERROR" else "Use the first blocking error line to identify the broken configuration or environment step, fix it, and rerun."
+    root_failure_statement = build_root_failure_statement(error_type, what_is_wrong, file_name, line)
+    class_or_function = extract_class_or_function(raw_log)
+    symbol_details = extract_symbol_details(raw_log) or {}
+    missing_symbols = extract_missing_symbols(raw_log)
+    secondary_issues = extract_secondary_issues(raw_log, snippets[0] if snippets else "")
+
+    if "error:" in text or "compilation failure" in text or "cannot find symbol" in text or "undefined reference" in text:
+        return build_result(
+            "Code Compilation Failure",
+            "Code Compilation Failure",
+            "A compiler or parser detected an error in source code or generated code.",
+            fix,
+            "MEDIUM" if file_name else "LOW",
+            tool,
+            file_name,
+            line,
+            column,
+            snippets,
+            location_evidence,
+            False,
+            "Feature development team",
+            None,
+            None,
+            raw_log,
+            error_type,
+            error_type_display,
+            root_failure_statement,
+            what_is_wrong,
+            class_or_function,
+            symbol_details.get("name"),
+            symbol_details.get("kind"),
+            missing_symbols,
+            secondary_issues,
+        )
+
+    return build_result(
+        "Unknown Failure",
+        "Unknown",
+        "The analyzer did not find a confident signature for this failure.",
+        fix,
+        "LOW",
+        tool,
+        file_name,
+        line,
+        column,
+        snippets,
+        location_evidence,
+        False,
+        "Engineering team",
+        None,
+        None,
+        raw_log,
+        error_type,
+        error_type_display,
+        root_failure_statement,
+        what_is_wrong,
+        class_or_function,
+        symbol_details.get("name"),
+        symbol_details.get("kind"),
+        missing_symbols,
+        secondary_issues,
+    )
+
 
 def classify_and_fix(log: str):
-    """
-    Classify failure using patterns and generate fix using extracted file/line/col.
-    """
-    file, line, col, locationEvidence = extract_file_line_col(log)
-    snippets = extract_error_snippets(log)
+    root_failure = find_root_failure(log)
+    root_context_text = "\n".join(root_failure["contextLines"]) or root_failure["rootLine"]
+    file_name, line, column, location_evidence = extract_file_line_col(root_context_text)
+
+    if not file_name and not line:
+        file_name, line, column, location_evidence = extract_file_line_col(log)
+
+    snippets = [root_failure["rootLine"]]
+    additional_snippets = extract_error_snippets(root_context_text, max_lines=4)
+
+    for snippet in additional_snippets:
+        if snippet not in snippets:
+            snippets.append(snippet)
 
     text = log.lower()
+    root_text = root_context_text.lower()
+    root_error_type = infer_error_type(root_failure["rootLine"], root_context_text, None)
+    signature, matched_pattern = match_signature(root_text)
 
-    # Tool detection
-    tool = "Unknown"
-    if "mvn " in text or "maven" in text or "pom.xml" in text:
-        tool = "Maven"
-    elif "gradle" in text or "build.gradle" in text:
-        tool = "Gradle"
-    elif "cmake" in text or "cmakelists.txt" in text:
-        tool = "CMake"
-    elif ".gitlab-ci.yml" in text:
-        tool = "GitLab CI"
-    elif "pytest" in text:
-        tool = "PyTest"
-    elif "npm" in text or "node" in text:
-        tool = "Node/NPM"
+    if signature is None:
+        signature, matched_pattern = match_signature(text)
 
-    # 1) Dependency / build config failures
-    if ("duplicate declaration" in text) or ("must be unique" in text) or ("dependency" in text and "duplicate" in text):
-        failureType = "Dependency Conflict"
-        category = "Build Configuration Failure"
-        rootCause = "Duplicate or conflicting dependency declaration detected"
+    if signature:
+        signature_error_type = infer_error_type(root_failure["rootLine"], root_context_text, signature)
 
-        where = ""
-        if file or line:
-            where = f" (at {file or 'unknown file'}{':' + str(line) if line else ''}{':' + str(col) if col else ''})"
+        if signature_error_type != root_error_type and root_error_type in {"COMPILATION_ERROR", "TEST_FAILURE", "RUNTIME_ERROR"}:
+            signature = None
+            matched_pattern = None
 
-        fix = "Remove duplicate dependency declaration"
-        if file and line:
-            fix += f" near line {line} in {file}"
-        elif file:
-            fix += f" in {file}"
-        fix += ". Ensure only one version of each dependency is declared."
+    tool = detect_tool(text, signature)
+    error_type = infer_error_type(root_failure["rootLine"], root_context_text, signature)
+    missing_symbol_details = extract_missing_symbol_details(root_context_text)
+    missing_symbols = extract_missing_symbols(root_context_text)
+    error_type_display = describe_error_type(error_type, root_context_text, missing_symbol_details)
+    class_or_function = extract_class_or_function(root_context_text)
+    symbol_details = extract_symbol_details(root_context_text) or {}
+    what_is_wrong = infer_what_is_wrong(error_type, root_failure["rootLine"], root_context_text, signature, missing_symbol_details)
+    secondary_issues = extract_secondary_issues(log, root_failure["rootLine"])
+    exact_fix = infer_exact_fix(error_type, what_is_wrong, file_name, line, root_context_text, signature, missing_symbol_details)
+    root_failure_statement = build_root_failure_statement(error_type, what_is_wrong, file_name, line)
 
-        return {
-            "failureType": failureType,
-            "category": category,
-            "tool": tool,
-            "file": file,
-            "line": line,
-            "column": col,
-            "errorMessage": snippets[0].strip() if snippets else "Dependency conflict detected",
-            "rootCause": rootCause + where,
-            "fixRecommendation": fix,
-            "confidence": "HIGH" if file or line else "MEDIUM",
-            "evidence": {
-                "locationLine": locationEvidence,
-                "snippets": snippets
-            }
-        }
+    if signature:
+        category = signature["category"]
+        failure_type = signature["failureType"]
+        return build_result(
+            failure_type,
+            category,
+            signature["rootCause"],
+            exact_fix,
+            signature.get("confidence", "MEDIUM"),
+            tool,
+            file_name,
+            line,
+            column,
+            snippets,
+            location_evidence,
+            bool(signature.get("supportsAutomatedRetry", False)),
+            signature.get("owner", "Engineering team"),
+            signature.get("id"),
+            matched_pattern,
+            log,
+            error_type,
+            error_type_display,
+            root_failure_statement,
+            what_is_wrong,
+            class_or_function,
+            symbol_details.get("name"),
+            symbol_details.get("kind"),
+            missing_symbols,
+            secondary_issues,
+        )
 
-    # 2) Compilation failures
-    if ("compilation failure" in text) or ("cannot find symbol" in text) or re.search(r"\berror:\b", text):
-        failureType = "Compilation Failure"
-        category = "Code Failure"
-        rootCause = "Compiler error detected (syntax, missing symbol, or type mismatch)"
+    return fallback_result(text, log, tool, file_name, line, column, snippets, location_evidence)
 
-        fix = "Open the first compiler error and fix it; later errors often cascade."
-        if file and line:
-            fix = f"Fix compilation error in {file} at/near line {line}. Start with the first 'error:' line."
-        elif file:
-            fix = f"Fix compilation error in {file}. Start with the first 'error:' line."
-
-        return {
-            "failureType": failureType,
-            "category": category,
-            "tool": tool,
-            "file": file,
-            "line": line,
-            "column": col,
-            "errorMessage": snippets[0].strip() if snippets else "Compilation error detected",
-            "rootCause": rootCause,
-            "fixRecommendation": fix,
-            "confidence": "HIGH" if snippets else "MEDIUM",
-            "evidence": {
-                "locationLine": locationEvidence,
-                "snippets": snippets
-            }
-        }
-
-    # 3) Test failures
-    if ("there are test failures" in text) or ("failures!!!" in text) or ("test failed" in text) or ("failed tests" in text):
-        failureType = "Test Failure"
-        category = "Test Failure"
-        rootCause = "One or more automated tests failed"
-
-        fix = "Find the first failing test name in the log and run it locally to reproduce."
-        return {
-            "failureType": failureType,
-            "category": category,
-            "tool": tool,
-            "file": file,
-            "line": line,
-            "column": col,
-            "errorMessage": snippets[0].strip() if snippets else "Test failures detected",
-            "rootCause": rootCause,
-            "fixRecommendation": fix,
-            "confidence": "MEDIUM",
-            "evidence": {
-                "locationLine": locationEvidence,
-                "snippets": snippets
-            }
-        }
-
-    # 4) Environment / infra failures
-    if ("connection refused" in text) or ("timed out" in text) or ("runner system failure" in text) or ("no space left" in text):
-        return {
-            "failureType": "Infrastructure/Environment Failure",
-            "category": "Environment / Infrastructure",
-            "tool": tool,
-            "file": file,
-            "line": line,
-            "column": col,
-            "errorMessage": snippets[0].strip() if snippets else "Infra/env error detected",
-            "rootCause": "CI runner/environment issue (network, disk, permissions, or runner instability)",
-            "fixRecommendation": "Retry pipeline; if repeatable, check runner health, disk space, network access, and permissions.",
-            "confidence": "MEDIUM",
-            "evidence": {
-                "locationLine": locationEvidence,
-                "snippets": snippets
-            }
-        }
-    
-    if re.search(r"\berror:\b", text) and file:
-        failureType = "Compilation Failure"
-        category = "Code Failure"
-        where = f"{file}"
-        if line:
-            where += f":{line}"
-        if col:
-            where += f":{col}"
-        fix = f"Open {file}"
-        if line:
-            fix += f" at line {line}"
-        fix += " and fix the compiler error. Start with the first 'error:' in log."
-        return {
-            "failureType": failureType,
-            "category": category,
-            "tool": tool,
-            "file": file,
-            "line": line,
-            "column": col,
-            "errorMessage": snippets[0].strip() if snippets else f"Compilation error in {where}",
-            "rootCause": "Compiler error detected (syntax, missing symbol, or type mismatch)",
-            "fixRecommendation": fix,
-            "confidence": "HIGH",
-            "evidence": {
-                "locationLine": locationEvidence,
-                "snippets": snippets
-            }
-        }
-
-    # Default
-    return {
-        "failureType": "Unknown",
-        "category": "Unknown",
-        "tool": tool,
-        "file": file,
-        "line": line,
-        "column": col,
-        "errorMessage": snippets[0].strip() if snippets else "No strong failure pattern matched",
-        "rootCause": "Could not confidently classify from log patterns",
-        "fixRecommendation": "Provide more log context or add new pattern rules for this failure signature.",
-        "confidence": "LOW",
-        "evidence": {
-            "locationLine": locationEvidence,
-            "snippets": snippets
-        }
-    }
-    
-    
-
-
-# -----------------------------
-# Flask endpoint
-# -----------------------------
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    data = request.get_json(force=True) or {}
-    raw_log = data.get("log", "")
-    log = strip_ansi(raw_log)
+    payload = request.get_json(force=True) or {}
+    raw_log = payload.get("log", "")
+    cleaned_log = strip_ansi(raw_log)
+    return jsonify(classify_and_fix(cleaned_log))
 
-    result = classify_and_fix(log)
-    return jsonify(result)
 
 if __name__ == "__main__":
     app.run(port=5000)
-
-@app.route("/analyze", methods=["POST"])
-def analyze():
-    data = request.get_json(force=True) or {}
-
-    raw_log = data.get("log", "")
-
-    print("LOG LENGTH:", len(raw_log))
-    print("LOG SAMPLE:", raw_log[:500])
-
-    log = strip_ansi(raw_log)
-
-    result = classify_and_fix(log)
-    return jsonify(result)
-
-@app.route("/analyze", methods=["POST"])
-def analyze():
-
-    data = request.get_json(force=True)
-
-    log = data.get("log", "")
-
-    print("LOG RECEIVED LENGTH:", len(log))
-    print("FIRST 300 CHARS:")
-    print(log[:300])
-
-    result = classify_and_fix(log)
-
-    return jsonify(result)

@@ -2,8 +2,13 @@ package com.pipeline.intelligence_bot.service;
 
 import org.springframework.stereotype.Service;
 
-import java.util.*;
-import java.util.regex.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class DiffAnalysisService {
@@ -15,80 +20,99 @@ public class DiffAnalysisService {
             "pom.xml",
             "build.gradle",
             "build.gradle.kts",
-            "settings.gradle"
+            "settings.gradle",
+            "package.json",
+            "pyproject.toml",
+            "requirements.txt",
+            "CMakeLists.txt",
+            "Makefile",
+            "Dockerfile",
+            ".gitlab-ci.yml"
     );
 
     public Map<String, Object> analyzeDiffForFailure(
             List<Map<String, Object>> diffs,
             String failureFile,
             String failureLineStr,
-            String dependencyName) {
+            String dependencyName
+    ) {
 
         Map<String, Object> result = new HashMap<>();
-
-        if (failureFile == null || failureLineStr == null) {
-
-            result.put("rootCauseCommitMatch", false);
-            result.put("rootCausePrecision", "Unknown failure location");
-            result.put("confidenceLevel", "LOW");
-
-            return result;
-        }
-
-        int failureLine;
-
-        try {
-            failureLine = Integer.parseInt(failureLineStr);
-        } catch (Exception e) {
-
-            result.put("rootCauseCommitMatch", false);
-            result.put("rootCausePrecision", "Invalid failure line format");
-            result.put("confidenceLevel", "LOW");
-
-            return result;
-        }
-
-        boolean buildFileFailure = isBuildFile(failureFile);
-
         List<String> modifiedFiles = new ArrayList<>();
         boolean buildFileModified = false;
 
         for (Map<String, Object> diff : diffs) {
-
             String filePath = getPath(diff);
 
             if (!filePath.isEmpty()) {
                 modifiedFiles.add(filePath);
             }
 
-            if (filePath.endsWith(failureFile)) {
+            if (failureFile != null && filePath.endsWith(failureFile)) {
                 buildFileModified = true;
             }
         }
 
+        if (failureFile == null || failureFile.isBlank()) {
+            if (!modifiedFiles.isEmpty() && dependencyName != null) {
+                return buildResult(
+                        false,
+                        dependencyName,
+                        "INDIRECT",
+                        null,
+                        "Dependency-specific failure detected, but the exact file location was not extracted from logs",
+                        "LOW",
+                        modifiedFiles
+                );
+            }
 
+            result.put("rootCauseCommitMatch", false);
+            result.put("rootCausePrecision", "Unknown failure location");
+            result.put("confidenceLevel", "LOW");
+            result.put("modifiedFiles", modifiedFiles);
+            return result;
+        }
+
+        int failureLine;
+
+        try {
+            failureLine = failureLineStr == null || failureLineStr.isBlank()
+                    ? -1
+                    : Integer.parseInt(failureLineStr);
+        } catch (Exception exception) {
+            failureLine = -1;
+        }
+
+        boolean buildFileFailure = isBuildFile(failureFile);
 
         for (Map<String, Object> diff : diffs) {
-
             String filePath = getPath(diff);
 
             if (!filePath.endsWith(failureFile)) {
                 continue;
             }
 
+            if (failureLine == -1) {
+                return buildResult(
+                        true,
+                        filePath,
+                        "FILE_MATCH",
+                        null,
+                        "Commit directly modified the extracted failure file",
+                        buildFileFailure ? "VERY HIGH" : "HIGH",
+                        modifiedFiles
+                );
+            }
+
             String diffText = getDiffText(diff);
-
             String[] lines = diffText.split("\n");
-
             int currentNewLine = -1;
             boolean insideBlock = false;
 
             for (String line : lines) {
-
                 Matcher matcher = DIFF_HEADER.matcher(line);
 
                 if (matcher.find()) {
-
                     currentNewLine = Integer.parseInt(matcher.group(1));
                     insideBlock = true;
                     continue;
@@ -99,16 +123,13 @@ public class DiffAnalysisService {
                 }
 
                 if (line.startsWith("-") && !line.startsWith("---")) {
-
                     if (currentNewLine == failureLine) {
-
                         return buildResult(
                                 true,
                                 filePath,
                                 "REMOVED",
                                 line.substring(1).trim(),
-                                "Commit REMOVED required line causing failure at "
-                                        + failureFile + ":" + failureLine,
+                                "Commit removed the line associated with the extracted failure location",
                                 "CRITICAL",
                                 modifiedFiles
                         );
@@ -118,16 +139,13 @@ public class DiffAnalysisService {
                 }
 
                 if (line.startsWith("+") && !line.startsWith("+++")) {
-
                     if (currentNewLine == failureLine) {
-
                         return buildResult(
                                 true,
                                 filePath,
                                 "ADDED",
                                 line.substring(1).trim(),
-                                "Commit ADDED failure-causing line at "
-                                        + failureFile + ":" + failureLine,
+                                "Commit added the line associated with the extracted failure location",
                                 "CRITICAL",
                                 modifiedFiles
                         );
@@ -138,14 +156,12 @@ public class DiffAnalysisService {
                 }
 
                 if (currentNewLine == failureLine) {
-
                     return buildResult(
                             true,
                             filePath,
                             "MODIFIED",
                             line.trim(),
-                            "Commit MODIFIED line causing failure at "
-                                    + failureFile + ":" + failureLine,
+                            "Commit modified the extracted failure line",
                             "VERY HIGH",
                             modifiedFiles
                     );
@@ -155,25 +171,18 @@ public class DiffAnalysisService {
             }
         }
 
-
-
         if (buildFileFailure) {
-
             if (buildFileModified) {
-
-                String dependencyInfo =
-                        dependencyName != null
-                                ? " involving dependency '" + dependencyName + "'"
-                                : "";
+                String dependencyInfo = dependencyName == null
+                        ? ""
+                        : " involving dependency '" + dependencyName + "'";
 
                 return buildResult(
                         true,
                         failureFile,
                         "BUILD_CONFIG",
                         null,
-                        "Commit modified build configuration file "
-                                + failureFile + dependencyInfo
-                                + " causing dependency/build failure",
+                        "Commit modified a build or pipeline configuration file" + dependencyInfo,
                         "VERY HIGH",
                         modifiedFiles
                 );
@@ -184,52 +193,33 @@ public class DiffAnalysisService {
                     failureFile,
                     "BUILD_CONFIG",
                     null,
-                    "Failure originates from build configuration (" + failureFile
-                            + ") but commit did not modify that file directly",
+                    "Failure originated from a configuration artifact, but the current commit did not touch that file directly",
                     "MEDIUM",
                     modifiedFiles
             );
         }
 
-
-
         if (!modifiedFiles.isEmpty()) {
-
             return buildResult(
                     false,
                     failureFile,
                     "INDIRECT",
                     null,
-                    "Commit modified source files but failure location "
-                            + failureFile
-                            + " was not directly modified",
+                    "The commit changed code, but the extracted failure location was not directly modified",
                     "LOW",
                     modifiedFiles
             );
         }
 
-
-
         result.put("rootCauseCommitMatch", false);
-
-        result.put(
-                "rootCausePrecision",
-                "Failure location not found in commit diff"
-        );
-
+        result.put("rootCausePrecision", "Failure location not found in commit diff");
         result.put("confidenceLevel", "LOW");
-
         result.put("modifiedFiles", modifiedFiles);
-
         return result;
     }
 
-
-
     private boolean isBuildFile(String file) {
-
         for (String buildFile : BUILD_FILES) {
-
             if (file.endsWith(buildFile)) {
                 return true;
             }
@@ -239,17 +229,11 @@ public class DiffAnalysisService {
     }
 
     private String getPath(Map<String, Object> diff) {
-
-        return diff.get("new_path") != null
-                ? diff.get("new_path").toString()
-                : "";
+        return diff.get("new_path") != null ? diff.get("new_path").toString() : "";
     }
 
     private String getDiffText(Map<String, Object> diff) {
-
-        return diff.get("diff") != null
-                ? diff.get("diff").toString()
-                : "";
+        return diff.get("diff") != null ? diff.get("diff").toString() : "";
     }
 
     private Map<String, Object> buildResult(
@@ -259,10 +243,10 @@ public class DiffAnalysisService {
             String lineContent,
             String precision,
             String confidence,
-            List<String> modifiedFiles) {
+            List<String> modifiedFiles
+    ) {
 
         Map<String, Object> result = new HashMap<>();
-
         result.put("rootCauseCommitMatch", commitMatch);
         result.put("matchedFile", file);
         result.put("changeType", changeType);
@@ -270,7 +254,6 @@ public class DiffAnalysisService {
         result.put("rootCausePrecision", precision);
         result.put("confidenceLevel", confidence);
         result.put("modifiedFiles", modifiedFiles);
-
         return result;
     }
 }

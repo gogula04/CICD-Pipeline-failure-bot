@@ -1,16 +1,21 @@
 package com.pipeline.intelligence_bot.controller;
 
-import com.pipeline.intelligence_bot.service.DiffAnalysisService;
-import com.pipeline.intelligence_bot.service.FailureAnalysisService;
+import com.pipeline.intelligence_bot.model.PipelineAnalysisRequest;
+import com.pipeline.intelligence_bot.service.EnterprisePipelineAnalysisService;
 import com.pipeline.intelligence_bot.service.GitLabService;
 import com.pipeline.intelligence_bot.service.PythonAnalysisService;
-import com.pipeline.intelligence_bot.service.PipelineIntelligenceService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/gitlab")
@@ -18,68 +23,67 @@ public class GitLabController {
 
     private final GitLabService gitLabService;
     private final PythonAnalysisService pythonAnalysisService;
-    private final FailureAnalysisService failureAnalysisService;
-    private final PipelineIntelligenceService pipelineIntelligenceService;
-    private DiffAnalysisService diffAnalysisService;
+    private final EnterprisePipelineAnalysisService enterprisePipelineAnalysisService;
 
-
-
-    public GitLabController(GitLabService gitLabService,
-                            FailureAnalysisService failureAnalysisService,
-                            PythonAnalysisService pythonAnalysisService,
-                            DiffAnalysisService diffAnalysisService,
-                            PipelineIntelligenceService pipelineIntelligenceService) {
-
+    public GitLabController(
+            GitLabService gitLabService,
+            PythonAnalysisService pythonAnalysisService,
+            EnterprisePipelineAnalysisService enterprisePipelineAnalysisService
+    ) {
         this.gitLabService = gitLabService;
-        this.failureAnalysisService = failureAnalysisService;
         this.pythonAnalysisService = pythonAnalysisService;
-        this.diffAnalysisService = diffAnalysisService;
-        this.pipelineIntelligenceService = pipelineIntelligenceService;
+        this.enterprisePipelineAnalysisService = enterprisePipelineAnalysisService;
     }
 
+    @GetMapping("/health")
+    public Map<String, Object> health() {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", "UP");
+        response.put("service", "CI/CD Pipeline Failure Intelligence Bot");
+        response.put("capabilitiesUrl", "/api/gitlab/capabilities");
+        return response;
+    }
 
+    @GetMapping("/capabilities")
+    public Map<String, Object> capabilities() {
+        return enterprisePipelineAnalysisService.getCapabilities();
+    }
 
     @GetMapping("/jobs")
     public List<Map<String, Object>> getPipelineJobs(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
+            @RequestParam String pipelineId
+    ) {
 
         return gitLabService.getPipelineJobsAsList(projectId, pipelineId);
     }
 
-
-
-
     @GetMapping("/logs")
     public String getJobLogs(
             @RequestParam String projectId,
-            @RequestParam String jobId) {
+            @RequestParam String jobId
+    ) {
 
         return gitLabService.getJobLogs(projectId, jobId);
     }
 
-
-
     @GetMapping("/pipelineSummary")
     public Map<String, Object> getPipelineSummary(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
+            @RequestParam String pipelineId
+    ) {
 
         return gitLabService.buildPipelineSummary(projectId, pipelineId);
     }
 
-
-
     @GetMapping("/firstFailedJob")
     public Map<String, Object> getFirstFailedJob(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
+            @RequestParam String pipelineId
+    ) {
 
-        List<Map<String, Object>> jobs =
-                gitLabService.getPipelineJobsAsList(projectId, pipelineId);
-
-        Map<String, Object> failed =
-                gitLabService.findFirstFailedJob(jobs);
+        List<Map<String, Object>> jobs = gitLabService.getPipelineJobsAsList(projectId, pipelineId);
+        Map<String, Object> failed = gitLabService.findFirstFailedJob(jobs);
 
         if (failed == null) {
             Map<String, Object> result = new HashMap<>();
@@ -90,394 +94,98 @@ public class GitLabController {
         return failed;
     }
 
-
-
     @GetMapping("/allFailedJobs")
     public List<Map<String, Object>> getAllFailedJobs(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
+            @RequestParam String pipelineId
+    ) {
 
-        List<Map<String, Object>> jobs =
-                gitLabService.getPipelineJobsAsList(projectId, pipelineId);
-
+        List<Map<String, Object>> jobs = gitLabService.getPipelineJobsAsList(projectId, pipelineId);
         return gitLabService.findAllFailedJobs(jobs);
     }
-
-
 
     @GetMapping("/basicFailureReport")
     public Map<String, Object> basicFailureReport(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
+            @RequestParam String pipelineId
+    ) {
 
-        List<Map<String, Object>> jobs =
-                gitLabService.getPipelineJobsAsList(projectId, pipelineId);
+        Map<String, Object> enterpriseReport =
+                enterprisePipelineAnalysisService.analyzePipeline(projectId, pipelineId);
 
-        Map<String, Object> failed =
-                gitLabService.findFirstFailedJob(jobs);
+        Map<String, Object> primaryFailure = asMap(enterpriseReport.get("primaryFailureAnalysis"));
+        Map<String, Object> pipelineSummary = asMap(enterpriseReport.get("pipelineSummary"));
 
-        if (failed == null) {
-            Map<String, Object> result = new HashMap<>();
-            result.put("status", "Pipeline successful. No failures detected.");
-            return result;
-        }
-        Map<String, Object> pipelineSummary =
-                gitLabService.buildPipelineSummary(projectId, pipelineId);
-
-        String jobId = failed.get("id").toString();
-        String jobName = failed.get("name") != null ?
-                failed.get("name").toString() : "unknown";
-        String stage = failed.get("stage") != null ?
-                failed.get("stage").toString() : "unknown";
-
-        String logs = gitLabService.getJobLogs(projectId, jobId);
-
-        Map<String, Object> result = new HashMap<>();
-
+        Map<String, Object> result = new LinkedHashMap<>();
         result.put("projectId", projectId);
         result.put("pipelineId", pipelineId);
+        result.put("pipelineCommit", enterpriseReport.get("pipelineCommit"));
         result.put("pipelineSummary", pipelineSummary);
-
-        result.put("failedJobId", jobId);
-        result.put("failedJobName", jobName);
-        result.put("failedJobStage", stage);
-
-        result.put("logLength", logs.length());
-        result.put("logsPreview",
-                logs.substring(0, Math.min(500, logs.length())));
-
+        result.put("failureType", primaryFailure.get("failureType"));
+        result.put("rootCause", primaryFailure.get("rootCause"));
+        result.put("fixRecommendation", primaryFailure.get("fixRecommendation"));
+        result.put("confidence", primaryFailure.get("confidence"));
         return result;
     }
 
     @GetMapping("/analyzeWithPython")
     public Map<String, Object> analyzePipelineWithPython(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
+            @RequestParam String pipelineId
+    ) {
 
-        List<Map<String, Object>> jobs =
-                gitLabService.getPipelineJobsAsList(projectId, pipelineId);
-
-        if (jobs == null || jobs.isEmpty()) {
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("error", "No jobs found");
-            return result;
-        }
-
-        Map<String, Object> failedJob = null;
-
-        for (Map<String, Object> job : jobs) {
-
-            if ("failed".equalsIgnoreCase(job.get("status").toString())) {
-
-                failedJob = job;
-                break;
-            }
-        }
+        List<Map<String, Object>> jobs = gitLabService.getPipelineJobsAsList(projectId, pipelineId);
+        Map<String, Object> failedJob = gitLabService.findFirstFailedJob(jobs);
 
         if (failedJob == null) {
-
             Map<String, Object> result = new HashMap<>();
             result.put("message", "No failures found");
             return result;
         }
 
         String jobId = failedJob.get("id").toString();
-
         String logs = gitLabService.getJobLogs(projectId, jobId);
-
-        Map<String, Object> pythonResult;
-
-        try {
-            pythonResult = pythonAnalysisService.analyzeLogs(logs);
-        } catch (Exception e) {
-
-            pythonResult = new HashMap<>();
-
-            pythonResult.put("analysisError", e.getMessage());
-            pythonResult.put("status", "Python analysis failed");
-        }
+        Map<String, Object> pythonResult = pythonAnalysisService.analyzeLogs(logs);
 
         pythonResult.put("projectId", projectId);
         pythonResult.put("pipelineId", pipelineId);
         pythonResult.put("jobId", jobId);
-
-        Map<String, Object> pipelineSummary =
-                gitLabService.buildPipelineSummary(projectId, pipelineId);
-
-        pythonResult.put("pipelineSummary", pipelineSummary);
-
-        String dependencyName =
-                extractDependencyNameFromPythonResult(pythonResult);
-
-        Map<String, Object> pipeline =
-                gitLabService.getPipelineDetails(projectId, pipelineId);
-
-        if (pipeline != null && pipeline.get("sha") != null) {
-
-            String commitSha = pipeline.get("sha").toString();
-
-            List<Map<String, Object>> diffs =
-                    gitLabService.getCommitDiffAsList(projectId, commitSha);
-
-            pythonResult.put("commitId", commitSha);
-
-            String failureFile =
-                    pythonResult.get("file") != null
-                            ? pythonResult.get("file").toString()
-                            : null;
-
-            String failureLine =
-                    pythonResult.get("line") != null
-                            ? pythonResult.get("line").toString()
-                            : null;
-
-
-
-            Map<String, Object> precisionResult =
-                    diffAnalysisService.analyzeDiffForFailure(
-                            diffs,
-                            failureFile,
-                            failureLine,
-                            dependencyName
-                    );
-
-            pythonResult.putAll(precisionResult);
-
-
-            Map<String, Object> historyResult =
-                    failureAnalysisService.analyzePipelineFailureWithHistory(
-                            projectId,
-                            pipelineId,
-                            failureFile,
-                            failureLine,
-                            dependencyName
-                    );
-
-
-            pythonResult.putAll(historyResult);
-
-
-
-            pythonResult.put("allChanges", diffs);
-        }
+        pythonResult.put("jobName", failedJob.get("name"));
+        pythonResult.put("stage", failedJob.get("stage"));
 
         return pythonResult;
     }
-    private String extractDependencyNameFromPythonResult(
-            Map<String, Object> pythonResult) {
 
-        if (pythonResult == null) {
-            return null;
-        }
-
-        Object errorMessageObj = pythonResult.get("errorMessage");
-
-        if (errorMessageObj == null) {
-            return null;
-        }
-
-        String errorMessage = errorMessageObj.toString();
-
-
-        Pattern pattern =
-                Pattern.compile("must be unique:\\s*([a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)");
-
-        Matcher matcher = pattern.matcher(errorMessage);
-
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
-
-        return null;
+    @PostMapping("/analyze")
+    public Map<String, Object> analyzePipeline(@RequestBody PipelineAnalysisRequest request) {
+        return enterprisePipelineAnalysisService.analyzePipeline(
+                request.getProjectId(),
+                request.getPipelineId(),
+                request.getFailedJobId()
+        );
     }
 
     @GetMapping("/analyzePipelineFully")
     public Map<String, Object> analyzePipelineFully(
             @RequestParam String projectId,
-            @RequestParam String pipelineId) {
-
-        Map<String, Object> finalResult = new HashMap<>();
-
-        try {
-
-
-            List<Map<String, Object>> jobs =
-                    gitLabService.getPipelineJobsAsList(projectId, pipelineId);
-
-            if (jobs == null || jobs.isEmpty()) {
-
-                finalResult.put("error", "No jobs found");
-                return finalResult;
-            }
-
-
-            Map<String, Object> pipelineSummary =
-                    gitLabService.buildPipelineSummary(projectId, pipelineId);
-
-            finalResult.put("pipelineSummary", pipelineSummary);
-
-
-
-            Map<String, Object> pipeline =
-                    gitLabService.getPipelineDetails(projectId, pipelineId);
-
-            String pipelineCommit = null;
-
-            if (pipeline != null && pipeline.get("sha") != null) {
-                pipelineCommit = pipeline.get("sha").toString();
-            }
-
-            finalResult.put("pipelineCommit", pipelineCommit);
-
-
-
-            List<Map<String, Object>> failedJobs =
-                    gitLabService.findAllFailedJobs(jobs);
-
-
-            List<Map<String, Object>> jobAnalyses =
-                    new ArrayList<>();
-
-
-            String primaryFailureJobId = null;
-
-
-            for (Map<String, Object> job : failedJobs) {
-
-                Map<String, Object> jobResult =
-                        new HashMap<>();
-
-                String jobId =
-                        job.get("id").toString();
-
-                String jobName =
-                        job.get("name") != null
-                                ? job.get("name").toString()
-                                : "unknown";
-
-                String stage =
-                        job.get("stage") != null
-                                ? job.get("stage").toString()
-                                : "unknown";
-
-
-                jobResult.put("jobId", jobId);
-                jobResult.put("jobName", jobName);
-                jobResult.put("stage", stage);
-
-
-                if (primaryFailureJobId == null) {
-                    primaryFailureJobId = jobId;
-                }
-
-
-
-                String logs =
-                        gitLabService.getJobLogs(projectId, jobId);
-
-
-
-                Map<String, Object> pythonResult =
-                        pythonAnalysisService.analyzeLogs(logs);
-
-                pythonResult.put("projectId", projectId);
-                pythonResult.put("pipelineId", pipelineId);
-                pythonResult.put("jobId", jobId);
-                pythonResult.put("jobName", jobName);
-                pythonResult.put("stage", stage);
-
-
-
-                String dependencyName =
-                        extractDependencyNameFromPythonResult(pythonResult);
-
-
-                if (pipelineCommit != null) {
-
-                    pythonResult.put("commitId", pipelineCommit);
-
-
-
-                    List<Map<String, Object>> diffs =
-                            gitLabService.getCommitDiffAsList(
-                                    projectId,
-                                    pipelineCommit
-                            );
-
-
-                    String failureFile =
-                            pythonResult.get("file") != null
-                                    ? pythonResult.get("file").toString()
-                                    : null;
-
-                    String failureLine =
-                            pythonResult.get("line") != null
-                                    ? pythonResult.get("line").toString()
-                                    : null;
-
-
-                    Map<String, Object> diffResult =
-                            diffAnalysisService.analyzeDiffForFailure(
-                                    diffs,
-                                    failureFile,
-                                    failureLine,
-                                    dependencyName
-                            );
-
-                    pythonResult.putAll(diffResult);
-
-
-
-                    Map<String, Object> historyResult =
-                            failureAnalysisService.analyzePipelineFailureWithHistory(
-                                    projectId,
-                                    pipelineId,
-                                    failureFile,
-                                    failureLine,
-                                    dependencyName
-                            );
-
-                    pythonResult.putAll(historyResult);
-
-
-                    pythonResult.put("allChanges", diffs);
-                }
-
-
-                jobResult.put("failureAnalysis", pythonResult);
-
-                jobAnalyses.add(jobResult);
-            }
-
-
-
-            Map<String, Object> pipelineIntelligence =
-                    pipelineIntelligenceService.buildCascadingFailureIntelligence(jobs);
-
-
-            finalResult.put("jobAnalyses", jobAnalyses);
-
-            finalResult.put("pipelineIntelligence", pipelineIntelligence);
-
-
-            finalResult.put("projectId", projectId);
-            finalResult.put("pipelineId", pipelineId);
-
-            return finalResult;
-
-
-
-
-        }
-        catch (Exception e) {
-
-            finalResult.put("error", e.getMessage());
-
-            return finalResult;
-        }
+            @RequestParam String pipelineId,
+            @RequestParam(required = false) String failedJobId
+    ) {
+
+        return enterprisePipelineAnalysisService.analyzePipeline(projectId, pipelineId, failedJobId);
     }
 
+    private Map<String, Object> asMap(Object value) {
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> converted = new LinkedHashMap<>();
 
+            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                converted.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
 
+            return converted;
+        }
+
+        return new LinkedHashMap<>();
+    }
 }

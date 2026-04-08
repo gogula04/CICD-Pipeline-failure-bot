@@ -3,6 +3,7 @@ package com.pipeline.intelligence_bot.service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.Locale;
 import java.util.*;
 
 @Service
@@ -29,20 +30,14 @@ public class FailureAnalysisService {
             return result;
         }
 
-        String lowerLog = log.toLowerCase();
+        String lowerLog = log.toLowerCase(Locale.ROOT);
 
-        if (lowerLog.contains("duplicate declaration")
-                || lowerLog.contains("must be unique")
-                || lowerLog.contains("dependency")) {
-
-            failureType = "Dependency Configuration Failure";
-            rootCause = "Duplicate or conflicting dependency detected";
-            fixRecommendation =
-                    "Remove duplicate dependency in pom.xml or build file";
-        }
-
-        else if (lowerLog.contains("compilation failure")
-                || lowerLog.contains("cannot find symbol")) {
+        if (containsAny(lowerLog,
+                "compilation error",
+                "cannot find symbol",
+                "package does not exist",
+                "undefined reference",
+                "symbol:")) {
 
             failureType = "Code Compilation Failure";
             rootCause = "Code syntax or missing symbol error";
@@ -50,8 +45,11 @@ public class FailureAnalysisService {
                     "Fix compilation errors in source code";
         }
 
-        else if (lowerLog.contains("test failed")
-                || lowerLog.contains("there are test failures")) {
+        else if (containsAny(lowerLog,
+                "test failed",
+                "there are test failures",
+                "assertionerror",
+                "assertion failed")) {
 
             failureType = "Test Failure";
             rootCause = "Unit tests failed";
@@ -59,8 +57,11 @@ public class FailureAnalysisService {
                     "Fix failing test cases or logic";
         }
 
-        else if (lowerLog.contains("java version")
-                || lowerLog.contains("environment")) {
+        else if (containsAny(lowerLog,
+                "java version",
+                "environment",
+                "permission denied",
+                "command not found")) {
 
             failureType = "Environment Failure";
             rootCause = "Incorrect runtime environment configuration";
@@ -68,11 +69,36 @@ public class FailureAnalysisService {
                     "Verify Java version and environment variables";
         }
 
+        else if (containsAny(lowerLog,
+                "must be unique",
+                "duplicate declaration",
+                "duplicate dependency")) {
+
+            failureType = "Dependency Configuration Failure";
+            rootCause = "Duplicate or conflicting dependency detected";
+            fixRecommendation =
+                    "Remove duplicate dependency in pom.xml or build file";
+        }
+
         result.put("failureType", failureType);
         result.put("rootCause", rootCause);
         result.put("fixRecommendation", fixRecommendation);
 
         return result;
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        if (value == null) {
+            return false;
+        }
+
+        for (String needle : needles) {
+            if (needle != null && value.contains(needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 

@@ -1,49 +1,72 @@
 package com.pipeline.intelligence_bot.service;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.http.*;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.HashMap;
 
 @Service
 public class PythonAnalysisService {
 
-    private final String PYTHON_ENGINE_URL = "http://localhost:5000/analyze";
+    @Value("${analysis.python.url:http://localhost:5000/analyze}")
+    private String pythonEngineUrl;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
+
+    public PythonAnalysisService(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
 
     public Map<String, Object> analyzeLogs(String logs) {
+        if (logs == null || logs.isBlank()) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("failureType", "No log content");
+            empty.put("category", "Unknown");
+            empty.put("confidence", "LOW");
+            empty.put("analysisSource", "java-guardrail");
+            return empty;
+        }
 
         try {
-
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
 
-            Map<String, String> requestBody = new HashMap<>();
+            Map<String, String> requestBody = new LinkedHashMap<>();
             requestBody.put("log", logs);
 
-            HttpEntity<Map<String, String>> request =
-                    new HttpEntity<>(requestBody, headers);
+            HttpEntity<Map<String, String>> request = new HttpEntity<>(requestBody, headers);
 
             ResponseEntity<Map> response =
                     restTemplate.exchange(
-                            PYTHON_ENGINE_URL,
+                            pythonEngineUrl,
                             HttpMethod.POST,
                             request,
                             Map.class
                     );
 
-            return response.getBody();
+            Map<String, Object> responseBody = response.getBody();
 
-        } catch (Exception e) {
+            if (responseBody == null) {
+                throw new IllegalStateException("Python analysis returned an empty body");
+            }
 
-            Map<String, Object> error = new HashMap<>();
-            error.put("failureType", "Python Engine Error");
-            error.put("rootCause", e.getMessage());
-            error.put("fixRecommendation", "Check Python analysis engine");
-
+            responseBody.putIfAbsent("analysisSource", "python-pattern-engine");
+            return responseBody;
+        } catch (Exception exception) {
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("failureType", "Analysis Engine Unavailable");
+            error.put("category", "Unknown");
+            error.put("rootCause", exception.getMessage());
+            error.put("fixRecommendation", "Use the Java-side fallback analysis and verify that the Python engine is running.");
+            error.put("confidence", "LOW");
+            error.put("analysisSource", "java-fallback-required");
             return error;
         }
     }
