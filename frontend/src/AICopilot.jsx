@@ -126,12 +126,12 @@ export default function AICopilot({ analysis, analysisKey }) {
           <p className="panel-label">AI Assistant</p>
           <h2>🤖 AI Copilot</h2>
         </div>
-        <span className="panel-meta">Groq-powered Q&A on the current pipeline failure</span>
+        <span className="panel-meta">Groq-powered Q&A for the repo, pipeline, and general questions</span>
       </div>
 
       <p className="copilot-context">
-        Ask about <strong>{failureType}</strong>, <strong>{commitLabel}</strong>, or{" "}
-        <strong>{fileLabel}</strong>.
+        Ask about <strong>{failureType}</strong>, <strong>{commitLabel}</strong>,{" "}
+        <strong>{fileLabel}</strong>, or anything else you want to know.
       </p>
 
       <div className="copilot-quick-actions">
@@ -189,7 +189,7 @@ export default function AICopilot({ analysis, analysisKey }) {
           <input
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
-            placeholder="Ask a question about this pipeline failure..."
+            placeholder="Ask anything about the repo, pipeline, or project..."
             disabled={loading}
           />
         </label>
@@ -210,7 +210,7 @@ function buildStarterMessage(analysis) {
     role: "assistant",
     content:
       `I’m ready to help with ${failureType}. ` +
-      `Ask me to explain why it failed, whether the commit is responsible, or how to fix it. ` +
+      `Ask me to explain why it failed, whether the commit is responsible, how to fix it, or any other question. ` +
       `Current summary: ${rootCause}.`,
     codeSnippet: "",
     followUp: "",

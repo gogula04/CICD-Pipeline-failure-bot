@@ -25,15 +25,16 @@ public class AiChatService {
     private static final Logger logger = LoggerFactory.getLogger(AiChatService.class);
 
     private static final String GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
-    private static final String GROQ_STRICT_MODEL = "openai/gpt-oss-20b";
+    private static final String GROQ_STRICT_MODEL = "llama-3.3-70b-versatile";
 
     private final ObjectMapper objectMapper;
+    private final RepoContextService repoContextService;
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
     @Value("${analysis.ai.enabled:true}")
     private boolean enabled;
 
-    @Value("${analysis.ai.groq.model:openai/gpt-oss-20b}")
+    @Value("${analysis.ai.groq.model:llama-3.3-70b-versatile}")
     private String groqModel;
 
     @Value("${analysis.ai.temperature:0.2}")
@@ -48,24 +49,47 @@ public class AiChatService {
     @Value("${groq.api.key:}")
     private String groqApiKey;
 
-    public AiChatService(ObjectMapper objectMapper) {
+    public AiChatService(ObjectMapper objectMapper, RepoContextService repoContextService) {
         this.objectMapper = objectMapper;
+        this.repoContextService = repoContextService;
     }
 
     public Map<String, Object> answerQuestion(String question, Map<String, Object> analysis) {
+        Map<String, Object> repositoryContext = buildRepositoryContext(question, analysis);
+
         if (!isEnabled()) {
-            return buildFallbackResponse(question, analysis, "Groq AI is not configured");
+            return buildFallbackResponse(question, analysis, repositoryContext, "Groq AI is not configured");
         }
 
         try {
-            return answerWithGroq(question, analysis);
+            return answerWithGroq(question, analysis, repositoryContext);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            logger.warn("Chat request was interrupted: {}", exception.getMessage());
-            return buildFallbackResponse(question, analysis, "Groq AI request was interrupted");
+            String reason = summarizeException(exception, "Groq AI request was interrupted");
+            logger.warn("Chat request was interrupted: {}", reason);
+            return buildFallbackResponse(question, analysis, repositoryContext, reason);
         } catch (Exception exception) {
-            logger.warn("Chat request failed: {}", exception.getMessage());
-            return buildFallbackResponse(question, analysis, "Groq AI request failed");
+            String reason = summarizeException(exception, "Groq AI request failed");
+            logger.warn("Chat request failed: {}", reason);
+            return buildFallbackResponse(question, analysis, repositoryContext, reason);
+        }
+    }
+
+    private Map<String, Object> buildRepositoryContext(String question, Map<String, Object> analysis) {
+        try {
+            return repoContextService.buildRepositoryContext(question, analysis);
+        } catch (Exception exception) {
+            logger.warn("Repository context could not be built: {}", exception.getMessage());
+            Map<String, Object> fallback = new LinkedHashMap<>();
+            fallback.put("available", false);
+            fallback.put("repoRoot", "");
+            fallback.put("status", "Repository context unavailable.");
+            fallback.put("searchTerms", List.of());
+            fallback.put("focusPaths", List.of());
+            fallback.put("summary", Map.of("matchedFiles", 0, "selectedFiles", 0));
+            fallback.put("files", List.of());
+            fallback.put("references", List.of());
+            return fallback;
         }
     }
 
@@ -73,10 +97,10 @@ public class AiChatService {
         return enabled && groqApiKey != null && !groqApiKey.isBlank();
     }
 
-    private Map<String, Object> answerWithGroq(String question, Map<String, Object> analysis)
+    private Map<String, Object> answerWithGroq(String question, Map<String, Object> analysis, Map<String, Object> repositoryContext)
             throws IOException, InterruptedException {
 
-        Map<String, Object> context = buildChatContext(question, analysis);
+        Map<String, Object> context = buildChatContext(question, analysis, repositoryContext);
         String prompt = buildPrompt(question, context);
 
         Map<String, Object> requestBody = new LinkedHashMap<>();
@@ -127,6 +151,7 @@ public class AiChatService {
         result.put("followUp", asString(parsed.get("followUp")));
         result.put("confidence", asString(parsed.get("confidence")));
         result.put("focus", asStringList(parsed.get("focus"), 8));
+        result.put("references", asStringList(parsed.get("references"), 8));
         result.put("aiProvider", "groq");
         result.put("aiModel", firstNonBlank(asString(parsed.get("aiModel")), groqModel));
         result.put("analysisSource", "ai-groq-chat");
@@ -136,8 +161,17 @@ public class AiChatService {
     private String buildPrompt(String question, Map<String, Object> context) throws IOException {
         String serialized = objectMapper.writeValueAsString(context);
 
+// HARD LIMIT (VERY IMPORTANT)
+        if (serialized.length() > 4000) {
+            serialized = serialized.substring(0, 4000) + "...[truncated]";
+        }
+
         return """
-                You are an enterprise CI/CD debugging assistant.
+                You are a repo-aware Groq AI copilot for this dashboard.
+                Answer the user's question directly, even if it is general or not about the current failure.
+                Use the pipeline analysis, commit context, logs, and repository snippets only when they are relevant.
+                If the user asks about secrets, tokens, or environment variables, do not reveal secret values. Instead point to the safe config file path and explain how to set it locally.
+                If the question is unrelated to the repo or pipeline, answer normally using general reasoning.
 
                 You are given:
                 - Failure type
@@ -145,15 +179,17 @@ public class AiChatService {
                 - Logs
                 - File and line number
                 - Commit information
+                - Relevant repository files and code snippets
 
                 Answer the user's question clearly and practically.
 
                 Focus on:
-                - Why it failed
-                - What to fix
-                - Where to fix
+                - The exact answer the user asked for
+                - Why it matters in this repo or pipeline, if relevant
+                - The smallest useful next step
 
                 Do not give generic answers.
+                If repository snippets are included, use them to cite exact file paths and line numbers.
                 If the user asks for code or a fix example, include the smallest practical patch or codeSnippet.
                 Return JSON only. No markdown, no code fences, no prose outside the JSON.
 
@@ -167,13 +203,14 @@ public class AiChatService {
 
     private String systemPrompt() {
         return """
-                You are a concise, practical debugging copilot for GitLab CI/CD failures.
-                Stay grounded in the provided analysis, commit data, and filtered logs.
-                Prioritize direct fixes, exact failure locations, and commit relevance.
+                You are a concise, practical AI copilot.
+                Answer every user question directly.
+                Stay grounded in the provided analysis, commit data, filtered logs, and repository snippets when relevant.
+                Prioritize helpfulness, accuracy, and the smallest useful next step.
                 """;
     }
 
-    private Map<String, Object> buildChatContext(String question, Map<String, Object> analysis) {
+    private Map<String, Object> buildChatContext(String question, Map<String, Object> analysis, Map<String, Object> repositoryContext) {
         Map<String, Object> root = safeMap(analysis);
         Map<String, Object> reportMetadata = firstMap(root, "reportMetadata");
         Map<String, Object> pipeline = firstMap(root, "pipeline");
@@ -209,6 +246,11 @@ public class AiChatService {
         context.put("logs", pickLogContext(logs, failure));
         context.put("commit", pickCommitContext(commit, root));
         context.put("trend", pickFields(trend, List.of("recurrenceSummary", "recentFailureRatePercent", "recurringSignal", "sameSignatureCount", "sameFingerprintCount")));
+        context.put("questionMode", asString(repositoryContext.get("questionMode")));
+        context.put("repository", Map.of(
+                "references", repositoryContext.get("references"),
+                "summary", repositoryContext.get("summary")
+        ));
         return context;
     }
 
@@ -242,7 +284,6 @@ public class AiChatService {
         context.put("signals", asStringList(failure.get("signals"), 8));
         context.put("details", asStringList(failure.get("details"), 8));
         context.put("logHighlights", asStringList(failure.get("logHighlights"), 8));
-        context.put("preprocessedLogs", pickLogContext(safeMap(failure.get("preprocessedLogs")), failure));
         return context;
     }
 
@@ -253,7 +294,7 @@ public class AiChatService {
         context.put("signalCount", logs.get("signalCount"));
         context.put("highSignalLines", asStringList(logs.get("highSignalLines"), 8));
         context.put("contextWindow", asStringList(logs.get("contextWindow"), 8));
-        context.put("cleanedLogExcerpt", truncateText(firstNonBlank(asString(logs.get("cleanedLogExcerpt")), asString(failure.get("errorMessage"))), 4000));
+        context.put("cleanedLogExcerpt", truncateText(firstNonBlank(asString(logs.get("cleanedLogExcerpt")), asString(failure.get("errorMessage"))), 1000));
         return context;
     }
 
@@ -271,11 +312,13 @@ public class AiChatService {
         return context;
     }
 
-    private Map<String, Object> buildFallbackResponse(String question, Map<String, Object> analysis, String reason) {
+    private Map<String, Object> buildFallbackResponse(String question, Map<String, Object> analysis, Map<String, Object> repositoryContext, String reason) {
         Map<String, Object> root = safeMap(analysis);
         Map<String, Object> failure = firstMap(root, "failure", "primaryFailure", "primaryFailureAnalysis");
         Map<String, Object> commit = firstMap(root, "commit", "commitAnalysis");
         Map<String, Object> logs = safeMap(failure.get("preprocessedLogs"));
+        List<String> references = asStringList(repositoryContext.get("references"), 8);
+        String questionMode = firstNonBlank(asString(repositoryContext.get("questionMode")), "REPO_OR_PIPELINE");
 
         String failureType = firstNonBlank(asString(failure.get("failureType")), asString(failure.get("errorTypeDisplay")), asString(failure.get("errorType")), "Pipeline failure");
         String rootCause = firstNonBlank(asString(failure.get("rootCause")), asString(failure.get("whatIsWrong")), "The exact root cause still needs review.");
@@ -285,18 +328,38 @@ public class AiChatService {
         String fixRecommendation = firstNonBlank(asString(failure.get("fixRecommendation")), "Review the failing file, the first high-signal log line, and the recent commit.");
         String logSummary = firstNonBlank(asString(logs.get("summary")), "No log summary was available.");
 
-        String answer = "Groq AI is not available right now (" + reason + "). "
-                + "Based on the current analysis, this looks like " + failureType + " because " + rootCause + ". "
-                + "Focus on " + file + ":" + line + " and the commit " + commitSha + ". "
-                + "Suggested fix: " + fixRecommendation + " "
-                + "Log summary: " + logSummary;
+        String answer;
+        String followUp;
+        List<String> focus;
+
+        if ("GENERAL".equals(questionMode)) {
+            answer = "Groq AI is not available right now (" + reason + "). "
+                    + "Ask your question again once Groq is reachable and I will answer it directly.";
+            followUp = "You can ask about the repo, pipeline, config, or general project questions.";
+            focus = List.of("General answer", "Clarification");
+        } else if ("SECRET_CONFIG".equals(questionMode)) {
+            answer = "Groq AI is not available right now (" + reason + "). "
+                    + "For token or config questions, check the safe config files in the repo and set secrets locally. "
+                    + "Secret values are intentionally not exposed.";
+            followUp = "Ask where to set a token, how to wire environment variables, or which config file to edit.";
+            focus = List.of("Safe config paths", "Local secret setup");
+        } else {
+            answer = "Groq AI is not available right now (" + reason + "). "
+                    + "Based on the current analysis, this looks like " + failureType + " because " + rootCause + ". "
+                    + "Focus on " + file + ":" + line + " and the commit " + commitSha + ". "
+                    + "Suggested fix: " + fixRecommendation + " "
+                    + "Log summary: " + logSummary;
+            followUp = "Ask about the commit, the failing file, or the fastest safe fix.";
+            focus = List.of("Root cause", "Fix location", "Commit relevance");
+        }
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("answer", answer);
         response.put("codeSnippet", "");
-        response.put("followUp", "Ask about the commit, the failing file, or the fastest safe fix.");
+        response.put("followUp", followUp);
         response.put("confidence", firstNonBlank(asString(failure.get("confidence")), "LOW"));
-        response.put("focus", List.of("Root cause", "Fix location", "Commit relevance"));
+        response.put("focus", focus);
+        response.put("references", references);
         response.put("aiProvider", "fallback");
         response.put("aiModel", "deterministic-summary");
         response.put("analysisSource", "local-fallback");
@@ -332,6 +395,33 @@ public class AiChatService {
         return content;
     }
 
+    private String summarizeException(Exception exception, String fallbackReason) {
+        if (exception == null) {
+            return fallbackReason;
+        }
+
+        String message = firstNonBlank(exception.getMessage(), exception.getClass().getSimpleName(), fallbackReason);
+        String firstLine = message.split("\\R", 2)[0];
+        return sanitizeDiagnostic(firstLine, fallbackReason);
+    }
+
+    private String sanitizeDiagnostic(String value, String fallbackReason) {
+        if (value == null || value.isBlank()) {
+            return fallbackReason;
+        }
+
+        String redacted = value
+                .replaceAll("(?i)Bearer\\s+[A-Za-z0-9._-]+", "Bearer [redacted]")
+                .replaceAll("gsk_[A-Za-z0-9]+", "[redacted]")
+                .replaceAll("glpat-[A-Za-z0-9._-]+", "[redacted]");
+
+        if (redacted.length() > 180) {
+            return redacted.substring(0, 177) + "...";
+        }
+
+        return redacted;
+    }
+
     private Map<String, Object> buildResponseSchema() {
         Map<String, Object> schema = new LinkedHashMap<>();
         Map<String, Object> properties = new LinkedHashMap<>();
@@ -341,6 +431,7 @@ public class AiChatService {
         properties.put("followUp", nullableStringSchema());
         properties.put("confidence", stringSchema());
         properties.put("focus", stringArraySchema());
+        properties.put("references", stringArraySchema());
         properties.put("aiProvider", stringSchema());
         properties.put("aiModel", stringSchema());
 
