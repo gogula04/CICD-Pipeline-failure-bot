@@ -13,7 +13,7 @@ class EnterprisePipelineAnalysisServiceTest {
     @Test
     void fallbackAnalysis_prefersCompilerErrorsOverDependencyWarnings() throws Exception {
         EnterprisePipelineAnalysisService service =
-                new EnterprisePipelineAnalysisService(null, null, null, null);
+                new EnterprisePipelineAnalysisService(null, null, null, null, null, null);
 
         String log = """
                 [WARNING] 'dependencies.dependency.(groupId:artifactId:type:classifier)' must be unique: org.projectlombok:lombok:jar -> version 1.18.32 vs (?) @ line 146, column 21
@@ -42,7 +42,7 @@ class EnterprisePipelineAnalysisServiceTest {
     @Test
     void fallbackAnalysis_classifiesDatabaseIntegrityErrors_asTestFailures() throws Exception {
         EnterprisePipelineAnalysisService service =
-                new EnterprisePipelineAnalysisService(null, null, null, null);
+                new EnterprisePipelineAnalysisService(null, null, null, null, null, null);
 
         String log = """
                 [ERROR] Failed tests:

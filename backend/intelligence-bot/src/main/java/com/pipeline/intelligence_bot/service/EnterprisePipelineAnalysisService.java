@@ -51,6 +51,8 @@ public class EnterprisePipelineAnalysisService {
     private final PythonAnalysisService pythonAnalysisService;
     private final DiffAnalysisService diffAnalysisService;
     private final PipelineIntelligenceService pipelineIntelligenceService;
+    private final LogPreprocessingService logPreprocessingService;
+    private final AiReasoningService aiReasoningService;
 
     @Value("${analysis.read-only-mode:true}")
     private boolean readOnlyMode;
@@ -62,12 +64,16 @@ public class EnterprisePipelineAnalysisService {
             GitLabService gitLabService,
             PythonAnalysisService pythonAnalysisService,
             DiffAnalysisService diffAnalysisService,
-            PipelineIntelligenceService pipelineIntelligenceService
+            PipelineIntelligenceService pipelineIntelligenceService,
+            LogPreprocessingService logPreprocessingService,
+            AiReasoningService aiReasoningService
     ) {
         this.gitLabService = gitLabService;
         this.pythonAnalysisService = pythonAnalysisService;
         this.diffAnalysisService = diffAnalysisService;
         this.pipelineIntelligenceService = pipelineIntelligenceService;
+        this.logPreprocessingService = logPreprocessingService;
+        this.aiReasoningService = aiReasoningService;
     }
 
     public Map<String, Object> analyzePipeline(String projectId, String pipelineId) {
@@ -116,7 +122,15 @@ public class EnterprisePipelineAnalysisService {
                 ? Collections.emptyList()
                 : List.of(selectedFailureSource);
         List<Map<String, Object>> jobAnalyses =
-                buildJobAnalyses(normalizedProjectId, normalizedPipelineId, pipelineCommit, jobsToAnalyze, diffs);
+                buildJobAnalyses(
+                        normalizedProjectId,
+                        normalizedPipelineId,
+                        pipelineCommit,
+                        pipeline,
+                        pipelineSummary,
+                        jobsToAnalyze,
+                        diffs
+                );
 
         Map<String, Object> pipelineIntelligence =
                 pipelineIntelligenceService.buildCascadingFailureIntelligence(jobs);
@@ -315,6 +329,8 @@ public class EnterprisePipelineAnalysisService {
         capabilities.put("supportedFailureCategories", SUPPORTED_FAILURE_CATEGORIES);
         capabilities.put("supportedConfigurationFiles", SUPPORTED_CONFIGURATION_FILES);
         capabilities.put("analysisModes", List.of(
+                "python signatures only",
+                "dual-engine python signatures + Groq AI reasoning",
                 "multi-job root cause detection",
                 "cascading failure intelligence",
                 "commit and configuration correlation",
@@ -337,6 +353,11 @@ public class EnterprisePipelineAnalysisService {
                 "verification mismatch surfacing",
                 "requirements and traceability status reporting"
         ));
+        capabilities.put("analysisLayers", aiReasoningService.isEnabled()
+                ? List.of("Layer 1: Python signatures", "Layer 2: Groq AI reasoning")
+                : List.of("Layer 1: Python signatures"));
+        capabilities.put("aiProviders", List.of("Groq AI"));
+        capabilities.put("aiEngine", aiReasoningService.describeEngine());
         capabilities.put("recommendationPolicy",
                 "The system gives high-confidence fixes for recognized signatures and guided triage for novel or low-confidence failures.");
         capabilities.put("problemDomains", List.of(
@@ -372,6 +393,13 @@ public class EnterprisePipelineAnalysisService {
         metadata.put("analysisVersion", analysisVersion);
         metadata.put("readOnlyMode", readOnlyMode);
         metadata.put("enterpriseTier", "enterprise-ready");
+        metadata.put("analysisEngine", aiReasoningService.describeEngine());
+        metadata.put("analysisLayers", aiReasoningService.isEnabled()
+                ? List.of("Python signatures", "Groq AI reasoning")
+                : List.of("Python signatures"));
+        metadata.put("aiProvider", aiReasoningService.getProviderLabel());
+        metadata.put("aiModel", aiReasoningService.getModelName());
+        metadata.put("aiEnabled", aiReasoningService.isEnabled());
         metadata.put("pipelineTarget", projectId + "#" + pipelineId);
         metadata.put("hasFailures", !failedJobs.isEmpty());
 
@@ -475,11 +503,15 @@ public class EnterprisePipelineAnalysisService {
 
     private String determineAnalysisMode(Map<String, Object> selectedFailureSource, String failedJobId) {
         if (failedJobId != null) {
-            return "explicit-failed-job";
+            return aiReasoningService.isEnabled()
+                    ? "explicit-failed-job with Python signatures + Groq AI"
+                    : "explicit-failed-job with python signatures";
         }
 
         if (selectedFailureSource != null && !selectedFailureSource.isEmpty()) {
-            return "auto-first-failed-job";
+            return aiReasoningService.isEnabled()
+                    ? "auto-first-failed-job with Python signatures + Groq AI"
+                    : "auto-first-failed-job with python signatures";
         }
 
         return "successful-pipeline-baseline";
@@ -489,6 +521,8 @@ public class EnterprisePipelineAnalysisService {
             String projectId,
             String pipelineId,
             String pipelineCommit,
+            Map<String, Object> pipeline,
+            Map<String, Object> pipelineSummary,
             List<Map<String, Object>> failedJobs,
             List<Map<String, Object>> diffs
     ) {
@@ -498,7 +532,31 @@ public class EnterprisePipelineAnalysisService {
         for (Map<String, Object> job : failedJobs) {
             String jobId = asString(job.get("id"));
             String logs = gitLabService.getJobLogs(projectId, jobId);
-            Map<String, Object> rawAnalysis = pythonAnalysisService.analyzeLogs(logs);
+            Map<String, Object> rawAnalysis = new LinkedHashMap<>(pythonAnalysisService.analyzeLogs(logs));
+            Map<String, Object> preprocessedLogs = logPreprocessingService.preprocess(logs);
+            Map<String, Object> aiInsights = aiReasoningService.analyzeFailure(buildAiContext(
+                    projectId,
+                    pipelineId,
+                    pipelineCommit,
+                    pipeline,
+                    pipelineSummary,
+                    job,
+                    rawAnalysis,
+                    preprocessedLogs,
+                    diffs
+            ));
+
+            rawAnalysis.put("preprocessedLogs", preprocessedLogs);
+            rawAnalysis.put("analysisLayers", aiReasoningService.isEnabled()
+                    ? List.of("Layer 1: Python signatures", "Layer 2: Groq AI reasoning")
+                    : List.of("Layer 1: Python signatures"));
+
+            if (!aiInsights.isEmpty()) {
+                rawAnalysis.put("aiInsights", aiInsights);
+                mergeAiInsightsIntoAnalysis(rawAnalysis, aiInsights);
+            }
+
+            rawAnalysis.put("analysisSource", buildHybridAnalysisSource(rawAnalysis, aiInsights));
             Map<String, Object> normalizedAnalysis = normalizeFailureAnalysis(job, rawAnalysis, logs);
 
             String failureFile = asString(normalizedAnalysis.get("file"));
@@ -545,6 +603,187 @@ public class EnterprisePipelineAnalysisService {
         analyses.sort(Comparator.comparing(item -> asString(item.get("jobId"))));
 
         return analyses;
+    }
+
+    private Map<String, Object> buildAiContext(
+            String projectId,
+            String pipelineId,
+            String pipelineCommit,
+            Map<String, Object> pipeline,
+            Map<String, Object> pipelineSummary,
+            Map<String, Object> job,
+            Map<String, Object> pythonAnalysis,
+            Map<String, Object> preprocessedLogs,
+            List<Map<String, Object>> diffs
+    ) {
+
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("projectId", projectId);
+        context.put("pipelineId", pipelineId);
+        context.put("pipelineCommit", pipelineCommit);
+        context.put("pipeline", pipeline);
+        context.put("pipelineSummary", pipelineSummary);
+        context.put("selectedJob", summarizeJob(job));
+        context.put("pythonAnalysis", pythonAnalysis);
+        context.put("preprocessedLogs", preprocessedLogs);
+        context.put("diffSummaries", summarizeDiffs(diffs));
+        context.put("analysisGoal", "Refine the deterministic Python signature result with contextual reasoning.");
+        return context;
+    }
+
+    private List<Map<String, Object>> summarizeDiffs(List<Map<String, Object>> diffs) {
+        List<Map<String, Object>> summaries = new ArrayList<>();
+
+        for (Object diffObject : safeList(diffs)) {
+            if (summaries.size() >= 8) {
+                break;
+            }
+
+            Map<String, Object> diff = safeMap(diffObject);
+            Map<String, Object> summary = new LinkedHashMap<>();
+            String path = firstNonBlank(asString(diff.get("new_path")), asString(diff.get("old_path")));
+            String diffText = asString(diff.get("diff"));
+
+            summary.put("path", path);
+            summary.put("category", categorizeFile(path));
+            summary.put("changeType", inferChangeType(diffText));
+            summary.put("snippet", truncateMiddle(diffText, 900));
+            summaries.add(summary);
+        }
+
+        return summaries;
+    }
+
+    private void mergeAiInsightsIntoAnalysis(Map<String, Object> analysis, Map<String, Object> aiInsights) {
+        if (analysis == null || aiInsights == null || aiInsights.isEmpty()) {
+            return;
+        }
+
+        analysis.put("aiProvider", asString(aiInsights.get("aiProvider")));
+        analysis.put("aiModel", asString(aiInsights.get("aiModel")));
+        analysis.put("aiInsights", aiInsights);
+        analysis.put("summary", firstNonBlank(asString(aiInsights.get("summary")), asString(analysis.get("summary"))));
+        analysis.put("reasoning", mergeStringLists(analysis.get("reasoning"), aiInsights.get("reasoning")));
+        analysis.put("signals", mergeSignals(mergeStringList(analysis.get("signals")), aiInsights.get("signals")));
+        analysis.put("details", mergeStringLists(analysis.get("details"), aiInsights.get("details")));
+        analysis.put("fixOptions", mergeStringLists(analysis.get("fixOptions"), aiInsights.get("fixOptions")));
+        analysis.put("recommendedOwner", firstNonBlank(asString(aiInsights.get("recommendedOwner")), asString(analysis.get("recommendedOwner"))));
+        analysis.put("nextBestAction", firstNonBlank(asString(aiInsights.get("nextBestAction")), asString(analysis.get("nextBestAction"))));
+        analysis.put("knowledgeGap", firstNonBlank(asString(aiInsights.get("knowledgeGap")), asString(analysis.get("knowledgeGap"))));
+        analysis.put(
+                "recommendationPolicy",
+                firstNonBlank(asString(aiInsights.get("recommendationPolicy")), asString(analysis.get("recommendationPolicy")))
+        );
+        analysis.put("requiresHumanReview",
+                aiInsights.containsKey("requiresHumanReview")
+                        ? Boolean.TRUE.equals(aiInsights.get("requiresHumanReview"))
+                        : analysis.get("requiresHumanReview")
+        );
+        analysis.put("triageUrgency", mergeTriageUrgency(
+                safeMap(analysis.get("triageUrgency")),
+                safeMap(aiInsights.get("triageUrgency"))
+        ));
+
+        if (!isHighConfidenceSignature(analysis)) {
+            copyIfMeaningful(analysis, aiInsights, "category");
+            copyIfMeaningful(analysis, aiInsights, "failureType");
+            copyIfMeaningful(analysis, aiInsights, "tool");
+            copyIfMeaningful(analysis, aiInsights, "confidence");
+            copyIfMeaningful(analysis, aiInsights, "file");
+            copyIfMeaningful(analysis, aiInsights, "line");
+            copyIfMeaningful(analysis, aiInsights, "column");
+            copyIfMeaningful(analysis, aiInsights, "classOrFunction");
+            copyIfMeaningful(analysis, aiInsights, "symbolName");
+            copyIfMeaningful(analysis, aiInsights, "symbolKind");
+            analysis.put("missingSymbols", mergeStringLists(analysis.get("missingSymbols"), aiInsights.get("missingSymbols")));
+            copyIfMeaningful(analysis, aiInsights, "errorMessage");
+            copyIfMeaningful(analysis, aiInsights, "rootCause");
+            copyIfMeaningful(analysis, aiInsights, "whatIsWrong");
+            copyIfMeaningful(analysis, aiInsights, "fixRecommendation");
+            analysis.put("secondaryIssues", mergeStringLists(analysis.get("secondaryIssues"), aiInsights.get("secondaryIssues")));
+            copyIfMeaningful(analysis, aiInsights, "meaning");
+            copyIfMeaningful(analysis, aiInsights, "likelyCause");
+        }
+    }
+
+    private boolean isHighConfidenceSignature(Map<String, Object> analysis) {
+        if (analysis == null) {
+            return false;
+        }
+
+        String signatureId = asString(analysis.get("signatureId"));
+        String confidence = asString(analysis.get("confidence"));
+        return signatureId != null && !signatureId.isBlank() && "HIGH".equalsIgnoreCase(confidence);
+    }
+
+    private void copyIfMeaningful(Map<String, Object> target, Map<String, Object> source, String key) {
+        if (target == null || source == null || key == null) {
+            return;
+        }
+
+        Object value = source.get(key);
+
+        if (hasMeaningfulValue(value)) {
+            target.put(key, value);
+        }
+    }
+
+    private boolean hasMeaningfulValue(Object value) {
+        if (value == null) {
+            return false;
+        }
+
+        if (value instanceof String string) {
+            return !string.isBlank();
+        }
+
+        if (value instanceof Map<?, ?> map) {
+            return !map.isEmpty();
+        }
+
+        if (value instanceof List<?> list) {
+            return !list.isEmpty();
+        }
+
+        return true;
+    }
+
+    private Map<String, Object> mergeTriageUrgency(Map<String, Object> base, Map<String, Object> aiUrgency) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        merged.put("level", firstNonBlank(asString(aiUrgency.get("level")), asString(base.get("level"))));
+        merged.put("action", firstNonBlank(asString(aiUrgency.get("action")), asString(base.get("action"))));
+        merged.put("reason", firstNonBlank(asString(aiUrgency.get("reason")), asString(base.get("reason"))));
+        return merged;
+    }
+
+    private List<String> mergeStringLists(Object first, Object second) {
+        Set<String> merged = new LinkedHashSet<>();
+        merged.addAll(mergeStringList(first));
+        merged.addAll(mergeStringList(second));
+        return new ArrayList<>(merged);
+    }
+
+    private String buildHybridAnalysisSource(Map<String, Object> analysis, Map<String, Object> aiInsights) {
+        String baseSource = firstNonBlank(asString(analysis.get("analysisSource")), "python-pattern-engine");
+
+        if (aiInsights == null || aiInsights.isEmpty()) {
+            return baseSource;
+        }
+
+        String provider = firstNonBlank(asString(aiInsights.get("aiProvider")), aiReasoningService.getProviderLabel());
+        return "dual-engine (" + baseSource + " + " + provider + ")";
+    }
+
+    private String truncateMiddle(String value, int maxChars) {
+        String text = value == null ? "" : value;
+
+        if (text.length() <= maxChars) {
+            return text;
+        }
+
+        int head = Math.max(1, maxChars / 2);
+        int tail = Math.max(1, maxChars - head - 5);
+        return text.substring(0, head) + "\n...\n" + text.substring(text.length() - tail);
     }
 
     private Map<String, Object> normalizeFailureAnalysis(
@@ -607,6 +846,14 @@ public class EnterprisePipelineAnalysisService {
         analysis.put("resolutionType", resolutionType(category));
         analysis.put("confidenceScore", confidenceScore(confidence));
         analysis.put("evidence", buildEvidence(rawAnalysis.get("evidence"), logs));
+        analysis.put("summary", asString(rawAnalysis.get("summary")));
+        analysis.put("reasoning", mergeStringList(rawAnalysis.get("reasoning")));
+        analysis.put("triageUrgency", safeMap(rawAnalysis.get("triageUrgency")));
+        analysis.put("aiProvider", asString(rawAnalysis.get("aiProvider")));
+        analysis.put("aiModel", asString(rawAnalysis.get("aiModel")));
+        analysis.put("aiInsights", safeMap(rawAnalysis.get("aiInsights")));
+        analysis.put("analysisLayers", mergeStringList(rawAnalysis.get("analysisLayers")));
+        analysis.put("preprocessedLogs", safeMap(rawAnalysis.get("preprocessedLogs")));
         analysis.put("signatureId", asString(rawAnalysis.get("signatureId")));
         analysis.put("matchedPattern", asString(rawAnalysis.get("matchedPattern")));
         analysis.put("failureFingerprint", asString(rawAnalysis.get("failureFingerprint")));

@@ -204,6 +204,224 @@ button {
   border: 1px solid rgba(37, 47, 44, 0.08);
 }
 
+.ai-callout {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 1rem 1.1rem;
+  border-radius: 22px;
+  border: 1px solid rgba(29, 109, 102, 0.16);
+  background: linear-gradient(135deg, rgba(29, 109, 102, 0.12), rgba(180, 88, 68, 0.08));
+}
+
+.ai-callout-copy {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.ai-callout-label {
+  margin: 0;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.ai-callout h3 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 1.2rem;
+}
+
+.ai-callout p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.ai-callout-side {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.copilot-panel {
+  margin-top: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 251, 244, 0.95), rgba(246, 240, 229, 0.9)),
+    linear-gradient(135deg, rgba(29, 109, 102, 0.06), rgba(180, 88, 68, 0.05));
+}
+
+.copilot-context {
+  margin: 0.8rem 0 0;
+  color: var(--muted);
+}
+
+.copilot-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+
+.copilot-quick-button {
+  padding-inline: 0.85rem;
+  border-radius: 999px;
+}
+
+.copilot-stream {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  padding: 0.95rem;
+  max-height: 28rem;
+  overflow: auto;
+  border-radius: 22px;
+  border: 1px solid rgba(37, 47, 44, 0.08);
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.copilot-message {
+  display: grid;
+  gap: 0.3rem;
+  max-width: min(88%, 44rem);
+}
+
+.copilot-message.user {
+  justify-self: end;
+}
+
+.copilot-message.assistant {
+  justify-self: start;
+}
+
+.copilot-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.copilot-role {
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.copilot-bubble {
+  border-radius: 18px;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(37, 47, 44, 0.08);
+  box-shadow: 0 10px 24px rgba(37, 47, 44, 0.06);
+  overflow-wrap: anywhere;
+}
+
+.copilot-message.user .copilot-bubble {
+  background: rgba(231, 227, 220, 0.95);
+}
+
+.copilot-message.assistant .copilot-bubble {
+  background: rgba(232, 246, 232, 0.96);
+}
+
+.copilot-text,
+.copilot-followup {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.copilot-followup {
+  margin-top: 0.65rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.copilot-code {
+  margin: 0.75rem 0 0;
+  padding: 0.85rem;
+  border-radius: 14px;
+  background: #1b211f;
+  color: #f7f2e8;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: "SFMono-Regular", "JetBrains Mono", "Menlo", monospace;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.copilot-composer {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  margin-top: 1rem;
+}
+
+.copilot-input-wrap {
+  flex: 1;
+}
+
+.copilot-input-wrap input {
+  width: 100%;
+  padding: 0.95rem 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(37, 47, 44, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+}
+
+.copilot-input-wrap input:focus {
+  outline: none;
+  border-color: rgba(29, 109, 102, 0.45);
+  box-shadow: 0 0 0 4px rgba(29, 109, 102, 0.1);
+}
+
+.copilot-send {
+  min-width: 6.5rem;
+}
+
+.copilot-dots {
+  display: inline-flex;
+  gap: 0.18rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+}
+
+.copilot-dots span {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--teal);
+  animation: copilot-bounce 1s infinite ease-in-out;
+}
+
+.copilot-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.copilot-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes copilot-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.55;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
 .capability-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -373,7 +591,7 @@ button {
 
 .report-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.85rem;
   margin-top: 1.25rem;
   align-items: start;
@@ -401,7 +619,7 @@ button {
 }
 
 .metric-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .metric-card {
@@ -692,6 +910,18 @@ th {
   margin-top: 1rem;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .category-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -728,6 +958,23 @@ th {
   .job-grid,
   .category-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ai-callout {
+    flex-direction: column;
+  }
+
+  .ai-callout-side {
+    justify-content: flex-start;
+  }
+
+  .copilot-composer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .copilot-send {
+    width: 100%;
   }
 
   .panel-heading,
